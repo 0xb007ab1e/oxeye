@@ -21,7 +21,8 @@ use atspi::connection::AccessibilityConnection;
 use atspi::events::object::StateChangedEvent;
 use atspi::events::EventProperties;
 use atspi::proxy::accessible::AccessibleProxy;
-use atspi::{Event, ObjectEvents, State, StateSet};
+use atspi::proxy::value::ValueProxy;
+use atspi::{Event, Interface, ObjectEvents, State, StateSet};
 use futures_lite::stream::StreamExt;
 use ssip_client_async::fifo::asynchronous_tokio::Builder as SsipBuilder;
 use ssip_client_async::tokio::AsyncClient;
@@ -281,8 +282,9 @@ pub async fn run() -> Result<()> {
                 let element = announcement::Element {
                     ident: ctx,
                     description: &focused.description,
-                    // Numeric/text value via the AT-SPI Value/Text interface is a follow-up.
-                    value: None,
+                    // Numeric value via the AT-SPI Value interface; text-field content (Text
+                    // interface) is a further follow-up.
+                    value: focused.value.as_deref(),
                     states: focused.states,
                 };
                 let Some(ann) = announcement::compose(&element, settings.verbosity, action) else {
@@ -415,6 +417,7 @@ struct Focused {
     name: String,
     role: String,
     description: String,
+    value: Option<String>,
     states: announcement::States,
 }
 
@@ -456,6 +459,12 @@ async fn read_focus(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> R
             announcement::States::default()
         }
     };
+    // Read a numeric value only when the object advertises the Value interface, so we never
+    // probe it on something that lacks it (correctness + avoids needless calls).
+    let value = match proxy.get_interfaces().await {
+        Ok(ifaces) if ifaces.contains(Interface::Value) => read_value(conn, ev).await,
+        _ => None,
+    };
     let app = read_app_name(conn, &proxy).await;
     if name.is_empty() {
         // Unnamed containers (panels/frames/fillers) are normal; not worth a warning.
@@ -466,8 +475,59 @@ async fn read_focus(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> R
         name,
         role,
         description,
+        value,
         states,
     })
+}
+
+/// Read the current numeric value via the AT-SPI Value interface and format it for speech.
+/// Best-effort: returns `None` if the proxy can't be built, the value can't be read, or it is
+/// not finite. Caching is **off** (a single property `Get`, never `GetAll` — see issue #6).
+async fn read_value(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> Option<String> {
+    let proxy = ValueProxy::builder(conn.connection())
+        .destination(ev.sender())
+        .ok()?
+        .path(ev.path())
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()?;
+    let current = proxy.current_value().await.ok()?;
+    current.is_finite().then(|| format_value(current))
+}
+
+/// Format an AT-SPI numeric value compactly: whole numbers without decimals, fractions trimmed
+/// of trailing zeros (e.g. `70.0 -> "70"`, `0.50 -> "0.5"`).
+fn format_value(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        let formatted = format!("{value:.2}");
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+#[cfg(test)]
+mod value_format_tests {
+    use super::format_value;
+
+    #[test]
+    fn whole_numbers_have_no_decimals() {
+        assert_eq!(format_value(70.0), "70");
+        assert_eq!(format_value(0.0), "0");
+        assert_eq!(format_value(-5.0), "-5");
+    }
+
+    #[test]
+    fn fractions_trim_trailing_zeros() {
+        assert_eq!(format_value(0.5), "0.5");
+        assert_eq!(format_value(3.25), "3.25");
+        assert_eq!(format_value(2.50), "2.5");
+    }
 }
 
 /// Map an AT-SPI [`StateSet`] onto the subset of states oxeye announces. "Disabled" is gated on
