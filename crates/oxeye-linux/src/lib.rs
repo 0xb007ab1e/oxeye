@@ -21,7 +21,7 @@ use atspi::connection::AccessibilityConnection;
 use atspi::events::object::StateChangedEvent;
 use atspi::events::EventProperties;
 use atspi::proxy::accessible::AccessibleProxy;
-use atspi::{Event, ObjectEvents, State};
+use atspi::{Event, ObjectEvents, State, StateSet};
 use futures_lite::stream::StreamExt;
 use ssip_client_async::fifo::asynchronous_tokio::Builder as SsipBuilder;
 use ssip_client_async::tokio::AsyncClient;
@@ -265,16 +265,27 @@ pub async fn run() -> Result<()> {
                 if state.state != State::Focused || !state.enabled {
                     continue;
                 }
-                let (app, name, role) = match read_focus(&conn, &state).await {
-                    Ok(triple) => triple,
+                let focused = match read_focus(&conn, &state).await {
+                    Ok(focused) => focused,
                     Err(err) => {
                         tracing::debug!(%err, "could not describe focused element");
                         continue;
                     }
                 };
-                let ctx = ExclusionContext { app: &app, role: &role, name: &name };
+                let ctx = ExclusionContext {
+                    app: &focused.app,
+                    role: &focused.role,
+                    name: &focused.name,
+                };
                 let action = exclusions.evaluate(&ctx);
-                let Some(ann) = announcement::compose(&ctx, settings.verbosity, action) else {
+                let element = announcement::Element {
+                    ident: ctx,
+                    description: &focused.description,
+                    // Numeric/text value via the AT-SPI Value/Text interface is a follow-up.
+                    value: None,
+                    states: focused.states,
+                };
+                let Some(ann) = announcement::compose(&element, settings.verbosity, action) else {
                     continue; // suppressed by an exclusion rule
                 };
                 last_text = Some(ann.text.clone());
@@ -398,11 +409,17 @@ mod scale_tests {
     }
 }
 
-/// Build an accessible proxy for the event's object and return `(app, name, role)`.
-async fn read_focus(
-    conn: &AccessibilityConnection,
-    ev: &StateChangedEvent,
-) -> Result<(String, String, String)> {
+/// A focused element described from the accessibility tree, owned for the announcement step.
+struct Focused {
+    app: String,
+    name: String,
+    role: String,
+    description: String,
+    states: announcement::States,
+}
+
+/// Build an accessible proxy for the event's object and read its describable attributes.
+async fn read_focus(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> Result<Focused> {
     let sender = ev.sender().to_string();
     let path = ev.path().to_string();
     let proxy = AccessibleProxy::builder(conn.connection())
@@ -430,12 +447,42 @@ async fn read_focus(
             "element".to_owned()
         }
     };
+    // Description and state are best-effort: a failure degrades detail, not the announcement.
+    let description = proxy.description().await.unwrap_or_default();
+    let states = match proxy.get_state().await {
+        Ok(set) => states_from(set),
+        Err(err) => {
+            tracing::debug!(%err, %sender, %path, "get_state() failed");
+            announcement::States::default()
+        }
+    };
     let app = read_app_name(conn, &proxy).await;
     if name.is_empty() {
         // Unnamed containers (panels/frames/fillers) are normal; not worth a warning.
         tracing::debug!(%sender, %path, %app, %role, "focused object has no accessible name");
     }
-    Ok((app, name, role))
+    Ok(Focused {
+        app,
+        name,
+        role,
+        description,
+        states,
+    })
+}
+
+/// Map an AT-SPI [`StateSet`] onto the subset of states oxeye announces. "Disabled" is gated on
+/// focusability so static, non-interactive content isn't reported as dimmed.
+fn states_from(set: StateSet) -> announcement::States {
+    announcement::States {
+        checkable: set.contains(State::Checkable),
+        checked: set.contains(State::Checked),
+        expandable: set.contains(State::Expandable),
+        expanded: set.contains(State::Expanded),
+        selected: set.contains(State::Selected),
+        disabled: set.contains(State::Focusable) && !set.contains(State::Sensitive),
+        required: set.contains(State::Required),
+        has_popup: set.contains(State::HasPopup),
+    }
 }
 
 /// Resolve the accessible *application* name owning `focused`, for per-app exclusion rules.

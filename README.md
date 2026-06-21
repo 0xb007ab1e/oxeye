@@ -106,10 +106,16 @@ How much detail the reader speaks for each focused element:
 
 ```sh
 oxeye config show                  # current verbosity / network / rule count
-oxeye config verbosity low         # essential label only
-oxeye config verbosity medium      # "name, role" (default)
-oxeye config verbosity high        # "name, role, application"
+oxeye config verbosity low         # label + state/value only
+oxeye config verbosity medium      # adds the role (default)
+oxeye config verbosity high        # adds description + owning application
 ```
+
+Notable **states** are always spoken (e.g. *checked* / *not checked*, *expanded* / *collapsed*,
+*selected*, *dimmed*, *required*, *has popup*), as is a widget's **value** when available —
+these carry meaning, so they aren't trimmed even at low verbosity. The role is treated as chrome
+and appears from medium up; the accessible **description** and owning application are extra
+context spoken only at high.
 
 `summarize`/`lower-priority` exclusion rules compose with verbosity (a `summarize` rule always
 shortens; `lower-priority` keeps the verbosity-appropriate text but doesn't interrupt).

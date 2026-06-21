@@ -15,7 +15,10 @@ use crate::error::{Error, Result};
 use crate::exclusions::ExclusionRule;
 
 /// How much detail the screen reader announces by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Ordered `Low < Medium < High`, so announcement policy can compare levels
+/// (`verbosity >= Verbosity::Medium`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Verbosity {
     /// Minimal announcements.
     Low,
