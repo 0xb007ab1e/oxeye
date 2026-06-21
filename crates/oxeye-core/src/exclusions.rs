@@ -130,11 +130,19 @@ mod tests {
             ExclusionEngine::compile(&[rule(Some("noisyapp"), None, None, Action::Suppress)])
                 .unwrap();
         assert_eq!(
-            engine.evaluate(&Context { app: "noisyapp", role: "statusbar", name: "x" }),
+            engine.evaluate(&Context {
+                app: "noisyapp",
+                role: "statusbar",
+                name: "x"
+            }),
             Some(Action::Suppress)
         );
         assert_eq!(
-            engine.evaluate(&Context { app: "editor", role: "statusbar", name: "x" }),
+            engine.evaluate(&Context {
+                app: "editor",
+                role: "statusbar",
+                name: "x"
+            }),
             None
         );
     }
@@ -145,11 +153,19 @@ mod tests {
             ExclusionEngine::compile(&[rule(None, None, Some("(?i)cookie"), Action::Summarize)])
                 .unwrap();
         assert_eq!(
-            engine.evaluate(&Context { app: "web", role: "banner", name: "Cookie consent" }),
+            engine.evaluate(&Context {
+                app: "web",
+                role: "banner",
+                name: "Cookie consent"
+            }),
             Some(Action::Summarize)
         );
         assert_eq!(
-            engine.evaluate(&Context { app: "web", role: "banner", name: "Article" }),
+            engine.evaluate(&Context {
+                app: "web",
+                role: "banner",
+                name: "Article"
+            }),
             None
         );
     }
@@ -170,7 +186,11 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            engine.evaluate(&Context { app: "app", role: "x", name: "y" }),
+            engine.evaluate(&Context {
+                app: "app",
+                role: "x",
+                name: "y"
+            }),
             Some(Action::LowerPriority)
         );
     }

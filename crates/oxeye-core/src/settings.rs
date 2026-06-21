@@ -147,7 +147,10 @@ mod tests {
     #[test]
     fn defaults_are_private_and_offline() {
         let s = Settings::default();
-        assert!(!s.allow_network, "network must be off by default (no tracking)");
+        assert!(
+            !s.allow_network,
+            "network must be off by default (no tracking)"
+        );
         assert_eq!(s.verbosity, Verbosity::Medium);
     }
 

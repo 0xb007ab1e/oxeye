@@ -10,46 +10,41 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings" # treat warnings (incl. missing_docs, clippy) as errors
 
-# Phase-0 CI: build + test are the blocking gates. Format, lint, and the supply-chain
-# scans run and report but are non-blocking for now (continue-on-error) — see the tracking
-# issue to make them blocking once the code is formatted and dependencies are triaged.
+# Blocking gates: format, clippy, build+test, vulnerability audit, and license/dependency
+# policy. SBOM generation is best-effort (artifact only). Actions pinned by commit SHA
+# (std-supplychain).
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4          # TODO: pin to a commit SHA (std-supplychain)
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy
-      - name: Format (report-only for now)
-        continue-on-error: true
+      - name: Format
         run: cargo fmt --all -- --check
-      - name: Clippy (report-only for now)
-        continue-on-error: true
+      - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
-      - name: Test (blocking)
+      - name: Test
         run: cargo test --workspace --all-features
 
   supply-chain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4          # TODO: pin to a commit SHA
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Install audit/deny/sbom tools (prebuilt — fast, no MSRV constraint)
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
           tool: cargo-audit,cargo-deny,cargo-cyclonedx
-      - name: Vulnerability audit (report-only for now)
-        continue-on-error: true
+      - name: Vulnerability audit
         run: cargo audit
-      - name: License & dependency policy — deny.toml (report-only for now)
-        continue-on-error: true
+      - name: License & dependency policy (deny.toml)
         run: cargo deny check
-      - name: SBOM (CycloneDX)
+      - name: SBOM (CycloneDX) — best-effort artifact
         continue-on-error: true
         run: cargo cyclonedx --format json
 
-# TODO before first release: format the codebase + make fmt/clippy/audit/deny BLOCKING;
-# add secret scanning (e.g. gitleaks); sign artifacts + provenance (cosign/SLSA);
-# pin every action by commit SHA.
+# TODO before first release: add secret scanning (e.g. gitleaks); sign artifacts + provenance.
