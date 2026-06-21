@@ -18,12 +18,12 @@
 
 use anyhow::{Context as _, Result};
 use atspi::connection::AccessibilityConnection;
-use atspi::events::object::{StateChangedEvent, TextCaretMovedEvent};
+use atspi::events::object::{StateChangedEvent, TextCaretMovedEvent, TextChangedEvent};
 use atspi::events::EventProperties;
 use atspi::proxy::accessible::AccessibleProxy;
 use atspi::proxy::text::TextProxy;
 use atspi::proxy::value::ValueProxy;
-use atspi::{Event, Interface, ObjectEvents, State, StateSet};
+use atspi::{Event, Interface, ObjectEvents, Operation, State, StateSet};
 use futures_lite::stream::StreamExt;
 use ssip_client_async::fifo::asynchronous_tokio::Builder as SsipBuilder;
 use ssip_client_async::tokio::AsyncClient;
@@ -228,6 +228,9 @@ pub async fn run() -> Result<()> {
     conn.register_event::<TextCaretMovedEvent>()
         .await
         .context("registering for caret-moved events")?;
+    conn.register_event::<TextChangedEvent>()
+        .await
+        .context("registering for text-changed events")?;
     let atspi_events = conn.event_stream();
     futures_lite::pin!(atspi_events);
 
@@ -284,6 +287,7 @@ pub async fn run() -> Result<()> {
                             path: state.path().to_string(),
                             password: focused.role == "password text",
                             last: None,
+                            suppress_caret_at: None,
                         });
                         let ctx = ExclusionContext {
                             app: &focused.app,
@@ -313,16 +317,43 @@ pub async fn run() -> Result<()> {
                             continue; // a caret move on some other (stale) object
                         }
                         let new = moved.position;
-                        // Speak only a genuine move: never echo a password field, and treat the
-                        // first event after focus as a baseline (the caret placed on focus).
-                        let spoken = match (tracker.password, tracker.last) {
-                            (true, _) | (_, None) => None,
-                            (false, Some(last)) => {
-                                read_caret_text(&conn, &moved, last, new).await
+                        // Suppress the caret move a deletion triggers (the removed text was
+                        // announced by the text-changed handler instead).
+                        let suppressed = tracker.suppress_caret_at.take() == Some(new);
+                        // Otherwise speak a genuine move — but never echo a password field, and
+                        // treat the first event after focus as a baseline (the caret placed on
+                        // focus).
+                        let spoken = if tracker.password || suppressed {
+                            None
+                        } else {
+                            match tracker.last {
+                                None => None,
+                                Some(last) => read_caret_text(&conn, &moved, last, new).await,
                             }
                         };
                         tracker.last = Some(new);
                         if let Some(text) = spoken {
+                            last_text = Some(text.clone());
+                            speaker.announce(&text, true).await;
+                        }
+                    }
+                    Event::Object(ObjectEvents::TextChanged(changed)) => {
+                        let Some(tracker) = caret.as_mut() else { continue };
+                        if changed.sender().to_string() != tracker.sender
+                            || changed.path().to_string() != tracker.path
+                        {
+                            continue;
+                        }
+                        // Inserts are echoed by the accompanying caret move; only announce
+                        // deletions here, suppressing the caret move they trigger.
+                        if changed.operation != Operation::Delete {
+                            continue;
+                        }
+                        tracker.suppress_caret_at = Some(changed.start_pos);
+                        if tracker.password {
+                            continue; // never reveal a password field's content
+                        }
+                        if let Some(text) = describe_change(&changed.text) {
                             last_text = Some(text.clone());
                             speaker.announce(&text, true).await;
                         }
@@ -607,6 +638,9 @@ struct CaretTracker {
     password: bool,
     /// Last known caret offset; `None` until the first event after focus (the baseline).
     last: Option<i32>,
+    /// Offset the caret will land on after a deletion: the matching caret move is suppressed
+    /// (the removed text is announced instead). Consumed on the next caret move.
+    suppress_caret_at: Option<i32>,
 }
 
 /// AT-SPI `TextBoundaryType` granularities for `get_text_at_offset`.
@@ -661,6 +695,18 @@ async fn read_caret_text(
     }
 }
 
+/// Spoken form of inserted/deleted text from a text-changed event: nothing for an empty
+/// change, the whitespace-aware form for a single character, otherwise the trimmed text.
+fn describe_change(text: &str) -> Option<String> {
+    if text.is_empty() {
+        None
+    } else if text.chars().count() == 1 {
+        Some(speak_char(text))
+    } else {
+        clean_text(text)
+    }
+}
+
 /// Spoken form of a single traversed character: whitespace becomes a word; other characters
 /// are announced as-is.
 fn speak_char(s: &str) -> String {
@@ -675,7 +721,15 @@ fn speak_char(s: &str) -> String {
 
 #[cfg(test)]
 mod value_format_tests {
-    use super::{clean_text, format_value, speak_char};
+    use super::{clean_text, describe_change, format_value, speak_char};
+
+    #[test]
+    fn describe_change_handles_empty_single_and_multi() {
+        assert_eq!(describe_change(""), None);
+        assert_eq!(describe_change("x"), Some("x".to_owned()));
+        assert_eq!(describe_change(" "), Some("space".to_owned()));
+        assert_eq!(describe_change("  hello  "), Some("hello".to_owned()));
+    }
 
     #[test]
     fn speak_char_maps_whitespace_to_words() {
