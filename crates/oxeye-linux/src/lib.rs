@@ -158,7 +158,10 @@ async fn setup_keyboard() -> Option<Keyboard> {
     let _ = a11y_status.set_screen_reader_enabled(true).await;
     // KWin 6.3.x authorises KeyboardMonitor *only* for the owner of Orca's well-known name
     // (hardcoded in `a11ykeyboardmonitor.cpp`).
-    session.request_name("org.gnome.Orca.KeyboardMonitor").await.ok()?;
+    session
+        .request_name("org.gnome.Orca.KeyboardMonitor")
+        .await
+        .ok()?;
     let proxy = KeyboardMonitorProxy::new(&session).await.ok()?;
     proxy.watch_keyboard().await.ok()?;
     Some(Keyboard {

@@ -23,11 +23,17 @@ allow = [
     "0BSD",
     "Unicode-3.0",
     "Unicode-DFS-2016",
+    # Weak (file-level) copyleft, OSI-approved. Only a transitive dep (option-ext, via
+    # directories) uses it, unmodified — acceptable for a permissive app; MPL obligations
+    # apply only to modified MPL files, which we have none of.
+    "MPL-2.0",
 ]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Allow path/workspace deps without an explicit version (our internal oxeye-core).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

@@ -11,7 +11,7 @@ description = "Linux (AT-SPI2 + speech-dispatcher) back-end and Phase-0 spike fo
 workspace = true
 
 [dependencies]
-oxeye-core = { path = "../oxeye-core" }
+oxeye-core = { path = "../oxeye-core", version = "0.0.0" }
 atspi = { version = "0.30", features = ["tokio"] }
 ssip-client-async = { version = "0.19", features = ["tokio"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
