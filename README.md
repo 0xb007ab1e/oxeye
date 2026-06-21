@@ -118,7 +118,8 @@ multi-line documents aren't dumped on focus). These carry meaning, so they aren'
 at low verbosity.
 
 As you move the **caret** within a text field, oxeye announces the character you cross (or the
-word/line on a larger jump) — but **never** within a password field. The role is treated as chrome
+word/line on a larger jump); **deleting** speaks the removed text, and **selecting** speaks the
+selected text (or a length for large selections) — but **never** within a password field. The role is treated as chrome
 and appears from medium up; the accessible **description** and owning application are extra
 context spoken only at high.
 
