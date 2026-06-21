@@ -34,7 +34,14 @@ use oxeye_core::{Action, Settings};
 /// X keysyms for the keys we react to.
 const KEYSYM_CONTROL_L: u32 = 0xffe3;
 const KEYSYM_CONTROL_R: u32 = 0xffe4;
+const KEYSYM_ALT_L: u32 = 0xffe9;
+const KEYSYM_ALT_R: u32 = 0xffea;
 const KEYSYM_PAUSE: u32 = 0xff13;
+const KEYSYM_O: u32 = 0x6f;
+
+/// X11 modifier-mask bits as reported in the `KeyEvent` `state` field.
+const MOD_CONTROL: u32 = 0x04;
+const MOD_ALT: u32 = 0x08;
 
 /// The concrete SSIP client produced by the tokio fifo builder.
 type SsipClient = AsyncClient<
@@ -111,6 +118,9 @@ trait KeyboardMonitor {
     fn watch_keyboard(&self) -> zbus::Result<()>;
     /// Stop watching the keyboard.
     fn unwatch_keyboard(&self) -> zbus::Result<()>;
+    /// Grab specific key combinations so they are *consumed* (not delivered to the focused
+    /// app). `modifiers` lists modifier keysyms; `keystrokes` is `(keysym, modifier_mask)`.
+    fn set_key_grabs(&self, modifiers: Vec<u32>, keystrokes: Vec<(u32, u32)>) -> zbus::Result<()>;
 
     /// Emitted on each key press/release while watching or for grabbed keys.
     #[zbus(signal)]
@@ -164,6 +174,15 @@ async fn setup_keyboard() -> Option<Keyboard> {
         .ok()?;
     let proxy = KeyboardMonitorProxy::new(&session).await.ok()?;
     proxy.watch_keyboard().await.ok()?;
+    // Also grab a dedicated, *consumed* shortcut: Ctrl+Alt+O (won't reach the focused app).
+    let modifiers = vec![
+        KEYSYM_CONTROL_L,
+        KEYSYM_CONTROL_R,
+        KEYSYM_ALT_L,
+        KEYSYM_ALT_R,
+    ];
+    let grabs = vec![(KEYSYM_O, MOD_CONTROL | MOD_ALT)];
+    let _ = proxy.set_key_grabs(modifiers, grabs).await;
     Some(Keyboard {
         session,
         a11y_status,
@@ -264,6 +283,9 @@ pub async fn run() -> Result<()> {
                             .clone()
                             .unwrap_or_else(|| "nothing focused yet".to_owned());
                         speaker.announce(&text).await;
+                    }
+                    KEYSYM_O if has_ctrl_alt(args.state) => {
+                        speaker.announce(&format!("time, {}", current_time())).await;
                     }
                     _ => {}
                 }
@@ -390,6 +412,23 @@ async fn read_app_name(conn: &AccessibilityConnection, focused: &AccessibleProxy
         return String::new();
     };
     app_proxy.name().await.unwrap_or_default()
+}
+
+/// True if both Control and Alt are held, per a `KeyEvent` modifier `state`.
+fn has_ctrl_alt(state: u32) -> bool {
+    let mask = MOD_CONTROL | MOD_ALT;
+    (state & mask) == mask
+}
+
+/// The current local time as a short spoken string (e.g. "3:07 PM"), via `date`.
+fn current_time() -> String {
+    std::process::Command::new("date")
+        .arg("+%-I:%M %p")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_else(|| "unavailable".to_owned())
 }
 
 /// Send one utterance over SSIP and read back its message id.
