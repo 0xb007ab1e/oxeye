@@ -245,9 +245,20 @@ async fn main() -> Result<()> {
                     _ => {}
                 }
             }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down: releasing screen-reader role");
+                break;
+            }
             else => break,
         }
     }
+
+    // Graceful shutdown: stop watching keys, release the Orca name, and clear the a11y
+    // flags so the desktop doesn't stay in "screen reader active" state after we exit.
+    let _ = keyboard.unwatch_keyboard().await;
+    let _ = session.release_name("org.gnome.Orca.KeyboardMonitor").await;
+    let _ = a11y_status.set_screen_reader_enabled(false).await;
+    speaker.silence().await;
 
     Ok(())
 }
