@@ -214,14 +214,14 @@ async fn main() -> Result<()> {
                 if state.state != State::Focused || !state.enabled {
                     continue;
                 }
-                let (name, role) = match read_name_role(&conn, &state).await {
-                    Ok(pair) => pair,
+                let (app, name, role) = match read_focus(&conn, &state).await {
+                    Ok(triple) => triple,
                     Err(err) => {
                         tracing::debug!(%err, "could not describe focused element");
                         continue;
                     }
                 };
-                let ctx = ExclusionContext { app: "", role: &role, name: &name };
+                let ctx = ExclusionContext { app: &app, role: &role, name: &name };
                 if exclusions.evaluate(&ctx) == Some(Action::Suppress) {
                     continue;
                 }
@@ -283,11 +283,11 @@ async fn connect_speech(settings: &Settings) -> Result<SsipClient> {
     Ok(tts)
 }
 
-/// Build an accessible proxy for the event's object and return its `(name, role)`.
-async fn read_name_role(
+/// Build an accessible proxy for the event's object and return `(app, name, role)`.
+async fn read_focus(
     conn: &AccessibilityConnection,
     ev: &StateChangedEvent,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String)> {
     let sender = ev.sender().to_string();
     let path = ev.path().to_string();
     let proxy = AccessibleProxy::builder(conn.connection())
@@ -313,11 +313,40 @@ async fn read_name_role(
             "element".to_owned()
         }
     };
+    let app = read_app_name(conn, &proxy).await;
     if name.is_empty() {
         // Unnamed containers (panels/frames/fillers) are normal; not worth a warning.
-        tracing::debug!(%sender, %path, role, "focused object has no accessible name");
+        tracing::debug!(%sender, %path, %app, %role, "focused object has no accessible name");
     }
-    Ok((name, role))
+    Ok((app, name, role))
+}
+
+/// Resolve the accessible *application* name owning `focused`, for per-app exclusion rules.
+/// Best-effort: returns an empty string if it can't be determined.
+async fn read_app_name(conn: &AccessibilityConnection, focused: &AccessibleProxy<'_>) -> String {
+    let Ok(app_ref) = focused.get_application().await else {
+        return String::new();
+    };
+    if app_ref.is_null() {
+        return String::new();
+    }
+    let (Some(name), path) = (app_ref.name(), app_ref.path()) else {
+        return String::new();
+    };
+    let Ok(builder) = AccessibleProxy::builder(conn.connection()).destination(name.clone()) else {
+        return String::new();
+    };
+    let Ok(builder) = builder.path(path.clone()) else {
+        return String::new();
+    };
+    let Ok(app_proxy) = builder
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+    else {
+        return String::new();
+    };
+    app_proxy.name().await.unwrap_or_default()
 }
 
 /// Send one utterance over SSIP and read back its message id.
