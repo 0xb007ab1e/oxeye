@@ -18,7 +18,9 @@
 
 use anyhow::{Context as _, Result};
 use atspi::connection::AccessibilityConnection;
-use atspi::events::object::{StateChangedEvent, TextCaretMovedEvent, TextChangedEvent};
+use atspi::events::object::{
+    StateChangedEvent, TextCaretMovedEvent, TextChangedEvent, TextSelectionChangedEvent,
+};
 use atspi::events::EventProperties;
 use atspi::proxy::accessible::AccessibleProxy;
 use atspi::proxy::text::TextProxy;
@@ -231,6 +233,9 @@ pub async fn run() -> Result<()> {
     conn.register_event::<TextChangedEvent>()
         .await
         .context("registering for text-changed events")?;
+    conn.register_event::<TextSelectionChangedEvent>()
+        .await
+        .context("registering for text-selection-changed events")?;
     let atspi_events = conn.event_stream();
     futures_lite::pin!(atspi_events);
 
@@ -354,6 +359,32 @@ pub async fn run() -> Result<()> {
                             continue; // never reveal a password field's content
                         }
                         if let Some(text) = describe_change(&changed.text) {
+                            last_text = Some(text.clone());
+                            speaker.announce(&text, true).await;
+                        }
+                    }
+                    Event::Object(ObjectEvents::TextSelectionChanged(sel)) => {
+                        let Some(tracker) = caret.as_mut() else { continue };
+                        if sel.sender().to_string() != tracker.sender
+                            || sel.path().to_string() != tracker.path
+                        {
+                            continue;
+                        }
+                        let Some(read) = read_selection(&conn, &sel).await else {
+                            continue;
+                        };
+                        // A non-empty selection moves the caret to its active end; suppress that
+                        // paired caret move (we announce the selection instead). A cleared
+                        // selection leaves its caret move as normal navigation.
+                        if read.text.is_some() {
+                            if let Some(offset) = read.caret {
+                                tracker.suppress_caret_at = Some(offset);
+                            }
+                        }
+                        if tracker.password {
+                            continue; // never reveal a password field's content
+                        }
+                        if let Some(text) = read.text {
                             last_text = Some(text.clone());
                             speaker.announce(&text, true).await;
                         }
@@ -695,6 +726,59 @@ async fn read_caret_text(
     }
 }
 
+/// The result of inspecting a text object's selection: what to announce (if anything) plus the
+/// current caret offset (to suppress the caret move the selection triggered).
+struct SelectionRead {
+    text: Option<String>,
+    caret: Option<i32>,
+}
+
+/// Read the current text selection via the Text interface. Caching is **off** (per-method
+/// `Get`, never `GetAll`). Reads at most [`TEXT_CONTENT_MAX_CHARS`] of selected text; larger
+/// selections are reported by length. Returns `None` only if the proxy can't be built.
+async fn read_selection(
+    conn: &AccessibilityConnection,
+    ev: &TextSelectionChangedEvent,
+) -> Option<SelectionRead> {
+    let proxy = TextProxy::builder(conn.connection())
+        .destination(ev.sender())
+        .ok()?
+        .path(ev.path())
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()?;
+    let caret = proxy.caret_offset().await.ok();
+    if proxy.get_n_selections().await.ok()? <= 0 {
+        return Some(SelectionRead { text: None, caret });
+    }
+    let (start, end) = proxy.get_selection(0).await.ok()?;
+    let length = end - start;
+    if length <= 0 {
+        return Some(SelectionRead { text: None, caret });
+    }
+    let selected = if length <= TEXT_CONTENT_MAX_CHARS {
+        proxy.get_text(start, end).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Some(SelectionRead {
+        text: format_selection(&selected, length),
+        caret,
+    })
+}
+
+/// Spoken form of a selection: the trimmed selected text plus "selected", or a length summary
+/// for selections too long to read aloud. Returns `None` when there is nothing meaningful.
+fn format_selection(selected: &str, length: i32) -> Option<String> {
+    if length > TEXT_CONTENT_MAX_CHARS {
+        Some(format!("{length} characters selected"))
+    } else {
+        clean_text(selected).map(|text| format!("{text} selected"))
+    }
+}
+
 /// Spoken form of inserted/deleted text from a text-changed event: nothing for an empty
 /// change, the whitespace-aware form for a single character, otherwise the trimmed text.
 fn describe_change(text: &str) -> Option<String> {
@@ -721,7 +805,20 @@ fn speak_char(s: &str) -> String {
 
 #[cfg(test)]
 mod value_format_tests {
-    use super::{clean_text, describe_change, format_value, speak_char};
+    use super::{clean_text, describe_change, format_selection, format_value, speak_char};
+
+    #[test]
+    fn format_selection_announces_text_or_count() {
+        assert_eq!(
+            format_selection("hello", 5),
+            Some("hello selected".to_owned())
+        );
+        assert_eq!(format_selection("  ", 2), None); // whitespace-only selection
+        assert_eq!(
+            format_selection("ignored", 500),
+            Some("500 characters selected".to_owned())
+        );
+    }
 
     #[test]
     fn describe_change_handles_empty_single_and_multi() {
