@@ -26,7 +26,10 @@ tracing = { workspace = true }
 # Windows-only: target-gated so it is not pulled into the Linux build/CI.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
+    "implement", # COM interface implementation (the focus-changed event sink)
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Accessibility",
 ] }
+# Direct dep so the `#[implement]` macro's generated `windows_core::…` paths resolve.
+windows-core = "0.58"
