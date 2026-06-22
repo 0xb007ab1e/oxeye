@@ -19,18 +19,22 @@ use anyhow::{Context as _, Result};
 use oxeye_core::announcement::{self, Announcement, Element, States};
 use oxeye_core::exclusions::{Context as UiaContext, ExclusionEngine};
 use oxeye_core::{Settings, Verbosity};
+use windows::core::Interface;
 use windows::core::{implement, PCWSTR};
 use windows::Win32::Media::Speech::{ISpVoice, SpVoice, SPF_ASYNC, SPF_PURGEBEFORESPEAK};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
+    CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, IUIAutomation,
+    IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
     IUIAutomationFocusChangedEventHandler, IUIAutomationFocusChangedEventHandler_Impl,
+    IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, ToggleState_On,
     UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId,
-    UIA_EditControlTypeId, UIA_HyperlinkControlTypeId, UIA_ListItemControlTypeId,
-    UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId, UIA_TabItemControlTypeId,
-    UIA_TextControlTypeId, UIA_CONTROLTYPE_ID,
+    UIA_EditControlTypeId, UIA_ExpandCollapsePatternId, UIA_HyperlinkControlTypeId,
+    UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId,
+    UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
+    UIA_TogglePatternId, UIA_CONTROLTYPE_ID, UIA_PATTERN_ID,
 };
 
 /// One announcement bound for the speech thread.
@@ -191,15 +195,59 @@ fn describe(
         role,
         name: &name,
     };
+    let states = read_states(element);
     let action = exclusions.evaluate(&ident);
     let element = Element {
         ident,
         description: "",
-        // Value (UIA Value/RangeValue patterns) and states are follow-ups.
+        // Value (UIA Value/RangeValue patterns) is a follow-up.
         value: None,
-        states: States::default(),
+        states,
     };
     announcement::compose(&element, verbosity, action)
+}
+
+/// Query a UIA control pattern, returning `None` when the element doesn't support it.
+fn pattern<T: Interface>(element: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
+    // SAFETY: GetCurrentPatternAs yields Err (null) for an unsupported pattern.
+    unsafe { element.GetCurrentPatternAs::<T>(id) }.ok()
+}
+
+/// Map UIA patterns/properties onto the core [`States`]: disabled (IsEnabled), checkable/checked
+/// (Toggle), expandable/expanded (ExpandCollapse), selected (SelectionItem). `required` and
+/// `has_popup` need VARIANT property reads and are follow-ups.
+fn read_states(element: &IUIAutomationElement) -> States {
+    let mut states = States::default();
+
+    // SAFETY: read the element's enabled flag.
+    if let Ok(enabled) = unsafe { element.CurrentIsEnabled() } {
+        states.disabled = !enabled.as_bool();
+    }
+    if let Some(toggle) = pattern::<IUIAutomationTogglePattern>(element, UIA_TogglePatternId) {
+        states.checkable = true;
+        // SAFETY: read the toggle state of a checkable control.
+        if let Ok(state) = unsafe { toggle.CurrentToggleState() } {
+            states.checked = state == ToggleState_On;
+        }
+    }
+    if let Some(ec) =
+        pattern::<IUIAutomationExpandCollapsePattern>(element, UIA_ExpandCollapsePatternId)
+    {
+        // SAFETY: read the expand/collapse state.
+        if let Ok(state) = unsafe { ec.CurrentExpandCollapseState() } {
+            states.expandable = state != ExpandCollapseState_LeafNode;
+            states.expanded = state == ExpandCollapseState_Expanded;
+        }
+    }
+    if let Some(item) =
+        pattern::<IUIAutomationSelectionItemPattern>(element, UIA_SelectionItemPatternId)
+    {
+        // SAFETY: read whether the item is selected.
+        if let Ok(selected) = unsafe { item.CurrentIsSelected() } {
+            states.selected = selected.as_bool();
+        }
+    }
+    states
 }
 
 /// Map a UIA control type to a human-readable role label for announcements.
