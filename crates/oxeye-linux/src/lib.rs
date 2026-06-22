@@ -16,6 +16,8 @@
 //! OXEYE_SPEECH=text cargo run -p oxeye-linux   # print announcements (headless/remote)
 //! ```
 
+use std::collections::HashMap;
+
 use anyhow::{Context as _, Result};
 use atspi::connection::AccessibilityConnection;
 use atspi::events::object::{
@@ -35,7 +37,7 @@ use tokio::io::{AsyncBufRead, AsyncWrite};
 
 use oxeye_core::announcement;
 use oxeye_core::exclusions::{Context as ExclusionContext, ExclusionEngine};
-use oxeye_core::navigation;
+use oxeye_core::navigation::{self, Direction, NavCategory};
 use oxeye_core::{Settings, Speech};
 
 /// X keysyms for the keys we react to.
@@ -46,8 +48,13 @@ const KEYSYM_ALT_R: u32 = 0xffea;
 const KEYSYM_PAUSE: u32 = 0xff13;
 const KEYSYM_O: u32 = 0x6f;
 const KEYSYM_S: u32 = 0x73;
+const KEYSYM_H: u32 = 0x68;
+const KEYSYM_B: u32 = 0x62;
+const KEYSYM_L: u32 = 0x6c;
+const KEYSYM_F: u32 = 0x66;
 
 /// X11 modifier-mask bits as reported in the `KeyEvent` `state` field.
+const MOD_SHIFT: u32 = 0x01;
 const MOD_CONTROL: u32 = 0x04;
 const MOD_ALT: u32 = 0x08;
 
@@ -190,17 +197,28 @@ async fn setup_keyboard() -> Option<Keyboard> {
         .ok()?;
     let proxy = KeyboardMonitorProxy::new(&session).await.ok()?;
     proxy.watch_keyboard().await.ok()?;
-    // Grab dedicated, *consumed* shortcuts (won't reach the focused app): Ctrl+Alt+O (time)
-    // and Ctrl+Alt+S (announce the focused application's structure).
+    // Grab dedicated, *consumed* shortcuts (won't reach the focused app): Ctrl+Alt+O (time),
+    // Ctrl+Alt+S (structure summary), and Ctrl+Alt+{H,B,L,F} to move to the next element of a
+    // type (heading/button/link/form field); add Shift for the previous one.
     let modifiers = vec![
         KEYSYM_CONTROL_L,
         KEYSYM_CONTROL_R,
         KEYSYM_ALT_L,
         KEYSYM_ALT_R,
     ];
+    let ctrl_alt = MOD_CONTROL | MOD_ALT;
+    let ctrl_alt_shift = MOD_CONTROL | MOD_ALT | MOD_SHIFT;
     let grabs = vec![
-        (KEYSYM_O, MOD_CONTROL | MOD_ALT),
-        (KEYSYM_S, MOD_CONTROL | MOD_ALT),
+        (KEYSYM_O, ctrl_alt),
+        (KEYSYM_S, ctrl_alt),
+        (KEYSYM_H, ctrl_alt),
+        (KEYSYM_H, ctrl_alt_shift),
+        (KEYSYM_B, ctrl_alt),
+        (KEYSYM_B, ctrl_alt_shift),
+        (KEYSYM_L, ctrl_alt),
+        (KEYSYM_L, ctrl_alt_shift),
+        (KEYSYM_F, ctrl_alt),
+        (KEYSYM_F, ctrl_alt_shift),
     ];
     let _ = proxy.set_key_grabs(modifiers, grabs).await;
     Some(Keyboard {
@@ -277,6 +295,8 @@ pub async fn run() -> Result<()> {
     let mut caret: Option<CaretTracker> = None;
     // Bus name of the most recently focused application, for the structure-summary hotkey.
     let mut focused_app: Option<String> = None;
+    // Virtual navigation cursor (sender, path) for by-type movement; follows focus.
+    let mut nav_cursor: Option<(String, String)> = None;
 
     loop {
         tokio::select! {
@@ -295,6 +315,7 @@ pub async fn run() -> Result<()> {
                             }
                         };
                         focused_app = Some(state.sender().to_string());
+                        nav_cursor = Some((state.sender().to_string(), state.path().to_string()));
                         // Track the caret for editable text objects, remembering whether it is a
                         // password field so caret moves there never echo characters.
                         caret = focused.has_text.then(|| CaretTracker {
@@ -428,6 +449,28 @@ pub async fn run() -> Result<()> {
                         let text = summary
                             .unwrap_or_else(|| "no structure to summarize".to_owned());
                         speaker.announce(&text, true).await;
+                    }
+                    KEYSYM_H | KEYSYM_B | KEYSYM_L | KEYSYM_F
+                        if has_ctrl_alt(args.state) =>
+                    {
+                        let target = match args.keysym {
+                            KEYSYM_H => NavCategory::Heading,
+                            KEYSYM_B => NavCategory::Button,
+                            KEYSYM_L => NavCategory::Link,
+                            _ => NavCategory::FormField,
+                        };
+                        let moved = navigate_by_category(
+                            &conn,
+                            focused_app.as_deref(),
+                            &mut nav_cursor,
+                            target,
+                            direction_from(args.state),
+                        )
+                        .await;
+                        if let Some(text) = moved {
+                            last_text = Some(text.clone());
+                            speaker.announce(&text, true).await;
+                        }
                     }
                     _ => {}
                 }
@@ -804,6 +847,90 @@ async fn summarize_structure(conn: &AccessibilityConnection, app: &str) -> Optio
         .iter()
         .map(|item| navigation::classify(item.role.name()));
     navigation::summarize(categories)
+}
+
+/// Map a key event's modifier state to a navigation [`Direction`] (Shift ⇒ previous).
+fn direction_from(state: u32) -> Direction {
+    if state & MOD_SHIFT != 0 {
+        Direction::Previous
+    } else {
+        Direction::Next
+    }
+}
+
+/// A stable id for an accessible object: its owning bus name and object path.
+fn object_id(object: &atspi::ObjectRefOwned) -> (String, String) {
+    (
+        object.name_as_str().unwrap_or_default().to_owned(),
+        object.path_as_str().to_owned(),
+    )
+}
+
+/// Move the virtual navigation cursor to the next/previous element of `target` type and return
+/// what to announce. Uses the AT-SPI Cache (one `GetItems`), flattens it into document order in
+/// the pure core, and searches from the cursor. Returns `None` only when no application is
+/// focused or the cache is unavailable; otherwise `Some` (including "no next/previous …").
+async fn navigate_by_category(
+    conn: &AccessibilityConnection,
+    app: Option<&str>,
+    cursor: &mut Option<(String, String)>,
+    target: NavCategory,
+    direction: Direction,
+) -> Option<String> {
+    let app = app?;
+    let cache = CacheProxy::builder(conn.connection())
+        .destination(app)
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()?;
+    let items = cache.get_items().await.ok()?;
+    if items.is_empty() {
+        return None;
+    }
+    let index_of: HashMap<(String, String), usize> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| (object_id(&item.object), i))
+        .collect();
+    let nodes: Vec<navigation::TreeNode> = items
+        .iter()
+        .map(|item| navigation::TreeNode {
+            parent: index_of.get(&object_id(&item.parent)).copied(),
+            index_in_parent: item.index,
+        })
+        .collect();
+    let order = navigation::document_order(&nodes);
+    let categories: Vec<Option<NavCategory>> = order
+        .iter()
+        .map(|&pos| navigation::classify(items[pos].role.name()))
+        .collect();
+    let from = cursor
+        .as_ref()
+        .and_then(|id| index_of.get(id))
+        .and_then(|&item_idx| order.iter().position(|&pos| pos == item_idx));
+
+    match navigation::find(&categories, from, target, direction) {
+        Some(found) => {
+            let item = &items[order[found]];
+            *cursor = Some(object_id(&item.object));
+            let name = item.name.trim();
+            let label = target.singular();
+            Some(if name.is_empty() {
+                label.to_owned()
+            } else {
+                format!("{name}, {label}")
+            })
+        }
+        None => {
+            let dir = match direction {
+                Direction::Next => "next",
+                Direction::Previous => "previous",
+            };
+            Some(format!("no {dir} {}", target.singular()))
+        }
+    }
 }
 
 /// Spoken form of a selection: the trimmed selected text plus "selected", or a length summary

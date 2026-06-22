@@ -118,9 +118,94 @@ where
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
+/// Direction of structured (by-type) navigation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Toward the end of the document.
+    Next,
+    /// Toward the start of the document.
+    Previous,
+}
+
+/// Find the next/previous element matching `target`, relative to `from` (the current cursor
+/// position in document order), without wrapping. `from` of `None` searches from the start
+/// (for `Next`) or yields nothing (for `Previous`). Returns the matching position.
+#[must_use]
+pub fn find(
+    categories: &[Option<NavCategory>],
+    from: Option<usize>,
+    target: NavCategory,
+    direction: Direction,
+) -> Option<usize> {
+    match direction {
+        Direction::Next => {
+            let start = from.map_or(0, |i| i + 1);
+            (start..categories.len()).find(|&i| categories[i] == Some(target))
+        }
+        Direction::Previous => {
+            let end = from.unwrap_or(0);
+            (0..end).rev().find(|&i| categories[i] == Some(target))
+        }
+    }
+}
+
+/// A node for document-order flattening. Each node's id is its position in the slice passed to
+/// [`document_order`]; `parent` is the parent's position (`None`, out-of-range, or self ⇒ a
+/// root), and `index_in_parent` orders siblings.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeNode {
+    /// Position of the parent node, if any.
+    pub parent: Option<usize>,
+    /// This node's index among its parent's children.
+    pub index_in_parent: i32,
+}
+
+/// Flatten a tree into document (depth-first, sibling-ordered) order, returning node positions.
+/// Robust to malformed input: orphans become roots, cycles are broken by a visited guard, and
+/// any node not reached from a root is appended so every node appears exactly once.
+#[must_use]
+pub fn document_order(nodes: &[TreeNode]) -> Vec<usize> {
+    let n = nodes.len();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut roots: Vec<usize> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        match node.parent {
+            Some(parent) if parent < n && parent != i => children[parent].push(i),
+            _ => roots.push(i),
+        }
+    }
+    for list in &mut children {
+        list.sort_by_key(|&child| nodes[child].index_in_parent);
+    }
+    roots.sort_by_key(|&root| nodes[root].index_in_parent);
+
+    let mut order = Vec::with_capacity(n);
+    let mut visited = vec![false; n];
+    let mut stack: Vec<usize> = roots.into_iter().rev().collect();
+    while let Some(node) = stack.pop() {
+        if visited[node] {
+            continue;
+        }
+        visited[node] = true;
+        order.push(node);
+        for &child in children[node].iter().rev() {
+            if !visited[child] {
+                stack.push(child);
+            }
+        }
+    }
+    // Append anything unreachable (e.g. inside a cycle) so no node is silently dropped.
+    for (i, seen) in visited.iter().enumerate() {
+        if !seen {
+            order.push(i);
+        }
+    }
+    order
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify, summarize, NavCategory};
+    use super::{classify, document_order, find, summarize, Direction, NavCategory, TreeNode};
 
     #[test]
     fn classifies_known_roles_and_ignores_others() {
@@ -153,5 +238,55 @@ mod tests {
     fn summarize_is_none_when_nothing_notable() {
         assert_eq!(summarize(vec![None, None]), None);
         assert_eq!(summarize(Vec::<Option<NavCategory>>::new()), None);
+    }
+
+    #[test]
+    fn find_moves_next_and_previous_without_wrapping() {
+        use NavCategory::{Button, Heading};
+        let cats = vec![
+            Some(Heading), // 0
+            Some(Button),  // 1
+            None,          // 2
+            Some(Heading), // 3
+            Some(Button),  // 4
+        ];
+        // Next heading from before the start, and after position 0.
+        assert_eq!(find(&cats, None, Heading, Direction::Next), Some(0));
+        assert_eq!(find(&cats, Some(0), Heading, Direction::Next), Some(3));
+        // No heading after the last one — does not wrap.
+        assert_eq!(find(&cats, Some(3), Heading, Direction::Next), None);
+        // Previous button from position 4, and none before position 1.
+        assert_eq!(find(&cats, Some(4), Button, Direction::Previous), Some(1));
+        assert_eq!(find(&cats, Some(1), Button, Direction::Previous), None);
+        // Previous from the start yields nothing.
+        assert_eq!(find(&cats, None, Heading, Direction::Previous), None);
+    }
+
+    fn node(parent: Option<usize>, index_in_parent: i32) -> TreeNode {
+        TreeNode {
+            parent,
+            index_in_parent,
+        }
+    }
+
+    #[test]
+    fn document_order_is_depth_first_by_sibling_index() {
+        let nodes = vec![
+            node(None, 0),    // 0 root
+            node(Some(0), 1), // 1 second child of root
+            node(Some(0), 0), // 2 first child of root
+            node(Some(2), 0), // 3 child of node 2
+        ];
+        // DFS, siblings by index: root, then child 2 (idx 0) and its child 3, then child 1.
+        assert_eq!(document_order(&nodes), vec![0, 2, 3, 1]);
+    }
+
+    #[test]
+    fn document_order_handles_cycles_and_orphans() {
+        // A 2-node cycle (no root) must still surface both nodes exactly once.
+        let cyclic = vec![node(Some(1), 0), node(Some(0), 0)];
+        let order = document_order(&cyclic);
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&0) && order.contains(&1));
     }
 }

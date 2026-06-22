@@ -122,7 +122,12 @@ word/line on a larger jump); **deleting** speaks the removed text, and **selecti
 selected text (or a length for large selections) — but **never** within a password field.
 
 Press **Ctrl+Alt+S** to hear a summary of the focused application's structure — e.g.
-*"3 headings, 12 buttons, 4 links"* — to get oriented in an unfamiliar window. The role is treated as chrome
+*"3 headings, 12 buttons, 4 links"* — to get oriented in an unfamiliar window.
+
+Move through it by element **type** with a virtual cursor (it starts wherever focus is):
+**Ctrl+Alt+H** next heading, **B** next button, **L** next link, **F** next form field — add
+**Shift** for the previous one. The target is announced (e.g. *"Save, button"*); at the end you
+hear *"no next button"*. The role is treated as chrome
 and appears from medium up; the accessible **description** and owning application are extra
 context spoken only at high.
 
