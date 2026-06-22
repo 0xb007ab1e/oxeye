@@ -27,12 +27,6 @@ use windows::Win32::Media::Speech::{ISpVoice, SpVoice, SPF_ASYNC, SPF_PURGEBEFOR
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetMessageW, MSG, WM_HOTKEY,
-};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, IUIAutomation,
     IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
@@ -46,6 +40,10 @@ use windows::Win32::UI::Accessibility::{
     UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
     UIA_TogglePatternId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID, UIA_PATTERN_ID,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetMessageW, MSG, WM_HOTKEY};
 
 /// Virtual-key codes for the navigation hotkeys (A–Z map to ASCII uppercase).
 const VK_B: u32 = 0x42;
@@ -155,7 +153,9 @@ pub(crate) fn run() -> Result<()> {
         .context("AddFocusChangedEventHandler")?;
     register_hotkeys().context("RegisterHotKey")?;
 
-    eprintln!("oxeye-windows: focus + Ctrl+Alt+{{B,L,F}} navigation (Shift = previous). Ctrl-C to quit.");
+    eprintln!(
+        "oxeye-windows: focus + Ctrl+Alt+{{B,L,F}} navigation (Shift = previous). Ctrl-C to quit."
+    );
     // The focus sink fires on UIA worker threads; this thread pumps WM_HOTKEY for navigation.
     // The virtual cursor is thread-local here (no cross-thread COM sharing).
     let mut cursor: Option<IUIAutomationElement> = None;
@@ -264,7 +264,9 @@ fn navigate(
 }
 
 /// Collect the foreground window's descendants in document order.
-fn collect_elements(automation: &IUIAutomation) -> windows::core::Result<Vec<IUIAutomationElement>> {
+fn collect_elements(
+    automation: &IUIAutomation,
+) -> windows::core::Result<Vec<IUIAutomationElement>> {
     // SAFETY: resolve the foreground window to a UIA element and enumerate its subtree.
     let hwnd = unsafe { GetForegroundWindow() };
     let window = unsafe { automation.ElementFromHandle(hwnd) }?;
