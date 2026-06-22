@@ -30,7 +30,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, HeadingLevel_None,
     IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
-    IUIAutomationElementArray, IUIAutomationExpandCollapsePattern,
+    IUIAutomationElement8, IUIAutomationElementArray, IUIAutomationExpandCollapsePattern,
     IUIAutomationFocusChangedEventHandler, IUIAutomationFocusChangedEventHandler_Impl,
     IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
     IUIAutomationValuePattern, ToggleState_On, TreeScope_Subtree, UIA_ButtonControlTypeId,
@@ -311,10 +311,14 @@ fn current_control_type(element: &IUIAutomationElement) -> UIA_CONTROLTYPE_ID {
 /// Classify an element for structured navigation: a heading (any element with a heading level
 /// set — web/document content), else by its control type.
 fn element_category(element: &IUIAutomationElement) -> Option<NavCategory> {
-    // SAFETY: read the heading level; absent/None means it is not a heading.
-    if let Ok(level) = unsafe { element.CurrentHeadingLevel() } {
-        if level != HeadingLevel_None {
-            return Some(NavCategory::Heading);
+    // CurrentHeadingLevel lives on IUIAutomationElement8 (Win10 1709+); older elements simply
+    // aren't classified as headings.
+    if let Ok(element8) = element.cast::<IUIAutomationElement8>() {
+        // SAFETY: read the heading level; HeadingLevel_None means it is not a heading.
+        if let Ok(level) = unsafe { element8.CurrentHeadingLevel() } {
+            if level != HeadingLevel_None {
+                return Some(NavCategory::Heading);
+            }
         }
     }
     control_type_category(current_control_type(element))
