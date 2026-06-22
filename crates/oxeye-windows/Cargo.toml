@@ -28,9 +28,11 @@ tracing = { workspace = true }
 windows = { version = "0.58", features = [
     "implement", # COM interface implementation (the focus-changed event sink)
     "Win32_Foundation",
-    "Win32_Media_Speech", # SAPI ISpVoice (speech output)
+    "Win32_Media_Speech",                # SAPI ISpVoice (speech output)
     "Win32_System_Com",
     "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",   # RegisterHotKey (by-type navigation)
+    "Win32_UI_WindowsAndMessaging",      # message loop (WM_HOTKEY), GetForegroundWindow
 ] }
 # Direct dep so the `#[implement]` macro's generated `windows_core::…` paths resolve.
 windows-core = "0.58"

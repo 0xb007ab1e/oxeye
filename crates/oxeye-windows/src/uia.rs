@@ -13,30 +13,42 @@
 //!   (which is `Send + Sync`); the handler never touches the voice directly.
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use oxeye_core::announcement::{self, Announcement, Element, States};
 use oxeye_core::exclusions::{Context as UiaContext, ExclusionEngine};
+use oxeye_core::navigation::{self, Direction, NavCategory};
 use oxeye_core::{Settings, Verbosity};
 use windows::core::Interface;
 use windows::core::{implement, PCWSTR};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Media::Speech::{ISpVoice, SpVoice, SPF_ASYNC, SPF_PURGEBEFORESPEAK};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, IUIAutomation,
-    IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
+    IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
+    IUIAutomationElementArray, IUIAutomationExpandCollapsePattern,
     IUIAutomationFocusChangedEventHandler, IUIAutomationFocusChangedEventHandler_Impl,
     IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
-    IUIAutomationValuePattern, ToggleState_On, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-    UIA_ComboBoxControlTypeId, UIA_EditControlTypeId, UIA_ExpandCollapsePatternId,
-    UIA_HyperlinkControlTypeId, UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId,
-    UIA_RadioButtonControlTypeId, UIA_RangeValuePatternId, UIA_SelectionItemPatternId,
-    UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId, UIA_ValuePatternId,
-    UIA_CONTROLTYPE_ID, UIA_PATTERN_ID,
+    IUIAutomationValuePattern, ToggleState_On, TreeScope_Subtree, UIA_ButtonControlTypeId,
+    UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_EditControlTypeId,
+    UIA_ExpandCollapsePatternId, UIA_HyperlinkControlTypeId, UIA_ListItemControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId, UIA_RangeValuePatternId,
+    UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
+    UIA_TogglePatternId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID, UIA_PATTERN_ID,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetMessageW, MSG, WM_HOTKEY};
+
+/// Virtual-key codes for the navigation hotkeys (A–Z map to ASCII uppercase).
+const VK_B: u32 = 0x42;
+const VK_L: u32 = 0x4C;
+const VK_F: u32 = 0x46;
 
 /// Upper bound on text value read for an announcement, to avoid dumping a whole document.
 const VALUE_MAX_CHARS: usize = 200;
@@ -79,7 +91,7 @@ impl SpeechMode {
 /// from UIA's worker threads; speech is delegated to a separate thread via `speech`.
 #[implement(IUIAutomationFocusChangedEventHandler)]
 struct FocusHandler {
-    exclusions: ExclusionEngine,
+    exclusions: Arc<ExclusionEngine>,
     verbosity: Verbosity,
     print: bool,
     speech: Option<SyncSender<Utterance>>,
@@ -92,26 +104,31 @@ impl IUIAutomationFocusChangedEventHandler_Impl for FocusHandler_Impl {
     ) -> windows::core::Result<()> {
         if let Some(element) = sender {
             if let Some(ann) = describe(element, &self.exclusions, self.verbosity) {
-                if self.print {
-                    println!("[say] {}", ann.text);
-                }
-                if let Some(tx) = &self.speech {
-                    // Never block a UIA worker thread: drop if the speech queue is full.
-                    let _ = tx.try_send(Utterance {
-                        text: ann.text,
-                        interrupt: ann.interrupt,
-                    });
-                }
+                emit(ann, self.print, self.speech.as_ref());
             }
         }
         Ok(())
     }
 }
 
+/// Emit an announcement to the configured channels: print and/or speak (never blocking).
+fn emit(ann: Announcement, print: bool, speech: Option<&SyncSender<Utterance>>) {
+    if print {
+        println!("[say] {}", ann.text);
+    }
+    if let Some(tx) = speech {
+        // Never block the caller (a UIA worker thread): drop if the speech queue is full.
+        let _ = tx.try_send(Utterance {
+            text: ann.text,
+            interrupt: ann.interrupt,
+        });
+    }
+}
+
 /// Initialize UI Automation, register the focus-changed handler, and keep it alive.
 pub(crate) fn run() -> Result<()> {
     let settings = Settings::load().unwrap_or_default();
-    let exclusions = ExclusionEngine::compile(&settings.exclusions).unwrap_or_default();
+    let exclusions = Arc::new(ExclusionEngine::compile(&settings.exclusions).unwrap_or_default());
     let mode = SpeechMode::from_env();
 
     // SAFETY: standard per-thread COM apartment initialization (MTA); released at exit.
@@ -125,20 +142,184 @@ pub(crate) fn run() -> Result<()> {
 
     let speech = mode.wants_audio().then(spawn_speech_thread);
     let handler: IUIAutomationFocusChangedEventHandler = FocusHandler {
-        exclusions,
+        exclusions: Arc::clone(&exclusions),
         verbosity: settings.verbosity,
         print: mode.wants_text(),
-        speech,
+        speech: speech.clone(),
     }
     .into();
-    // SAFETY: register the sink; UIA invokes it on its own threads until exit.
+    // SAFETY: register the focus sink; UIA invokes it on its own threads.
     unsafe { automation.AddFocusChangedEventHandler(None::<&IUIAutomationCacheRequest>, &handler) }
         .context("AddFocusChangedEventHandler")?;
+    register_hotkeys().context("RegisterHotKey")?;
 
-    eprintln!("oxeye-windows: listening for focus changes. Ctrl-C to quit.");
-    // The handler fires on UIA worker threads; keep this thread and the registration alive.
+    eprintln!(
+        "oxeye-windows: focus + Ctrl+Alt+{{B,L,F}} navigation (Shift = previous). Ctrl-C to quit."
+    );
+    // The focus sink fires on UIA worker threads; this thread pumps WM_HOTKEY for navigation.
+    // The virtual cursor is thread-local here (no cross-thread COM sharing).
+    let mut cursor: Option<IUIAutomationElement> = None;
+    let mut msg = MSG::default();
     loop {
-        std::thread::sleep(Duration::from_secs(3600));
+        // SAFETY: block for the next thread message (hotkeys post WM_HOTKEY to this queue).
+        let result = unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
+        if result.0 <= 0 {
+            break; // 0 = WM_QUIT, -1 = error
+        }
+        if msg.message == WM_HOTKEY {
+            if let Some((category, direction)) = hotkey_action(msg.wParam.0 as i32) {
+                navigate(
+                    &automation,
+                    &mut cursor,
+                    category,
+                    direction,
+                    &exclusions,
+                    settings.verbosity,
+                    mode.wants_text(),
+                    speech.as_ref(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Register the by-type navigation hotkeys: Ctrl+Alt+{B,L,F}, plus Shift for the previous match.
+fn register_hotkeys() -> windows::core::Result<()> {
+    let next = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
+    let prev = next | MOD_SHIFT;
+    let bindings = [
+        (1, VK_B, next),
+        (2, VK_L, next),
+        (3, VK_F, next),
+        (4, VK_B, prev),
+        (5, VK_L, prev),
+        (6, VK_F, prev),
+    ];
+    for (id, vk, modifiers) in bindings {
+        // SAFETY: a null HWND associates the hotkey with this thread's message queue.
+        unsafe { RegisterHotKey(HWND::default(), id, modifiers, vk) }?;
+    }
+    Ok(())
+}
+
+/// Map a hotkey id to the navigation category and direction it requests.
+fn hotkey_action(id: i32) -> Option<(NavCategory, Direction)> {
+    match id {
+        1 => Some((NavCategory::Button, Direction::Next)),
+        2 => Some((NavCategory::Link, Direction::Next)),
+        3 => Some((NavCategory::FormField, Direction::Next)),
+        4 => Some((NavCategory::Button, Direction::Previous)),
+        5 => Some((NavCategory::Link, Direction::Previous)),
+        6 => Some((NavCategory::FormField, Direction::Previous)),
+        _ => None,
+    }
+}
+
+/// Move the virtual cursor to the next/previous element of `target` type in the foreground
+/// window and announce it. The UIA tree (in document order from `FindAll`) is classified, and
+/// the shared core [`navigation::find`] selects the match relative to the current cursor.
+#[allow(clippy::too_many_arguments)]
+fn navigate(
+    automation: &IUIAutomation,
+    cursor: &mut Option<IUIAutomationElement>,
+    target: NavCategory,
+    direction: Direction,
+    exclusions: &ExclusionEngine,
+    verbosity: Verbosity,
+    print: bool,
+    speech: Option<&SyncSender<Utterance>>,
+) {
+    match collect_elements(automation) {
+        Ok(elements) => {
+            let categories: Vec<Option<NavCategory>> = elements
+                .iter()
+                .map(|el| control_type_category(current_control_type(el)))
+                .collect();
+            let from = current_index(automation, &elements, cursor.as_ref());
+            if let Some(index) = navigation::find(&categories, from, target, direction) {
+                let element = elements[index].clone();
+                if let Some(ann) = describe(&element, exclusions, verbosity) {
+                    emit(ann, print, speech);
+                }
+                *cursor = Some(element);
+            } else {
+                let dir = match direction {
+                    Direction::Next => "next",
+                    Direction::Previous => "previous",
+                };
+                let text = format!("no {dir} {}", target.singular());
+                emit(
+                    Announcement {
+                        text,
+                        interrupt: true,
+                    },
+                    print,
+                    speech,
+                );
+            }
+        }
+        Err(err) => tracing::debug!(%err, "navigation tree walk failed"),
+    }
+}
+
+/// Collect the foreground window's descendants in document order.
+fn collect_elements(
+    automation: &IUIAutomation,
+) -> windows::core::Result<Vec<IUIAutomationElement>> {
+    // SAFETY: resolve the foreground window to a UIA element and enumerate its subtree.
+    let hwnd = unsafe { GetForegroundWindow() };
+    let window = unsafe { automation.ElementFromHandle(hwnd) }?;
+    let condition: IUIAutomationCondition = unsafe { automation.CreateTrueCondition() }?;
+    let all: IUIAutomationElementArray = unsafe { window.FindAll(TreeScope_Subtree, &condition) }?;
+    let count = unsafe { all.Length() }?;
+    let mut elements = Vec::with_capacity(count.max(0) as usize);
+    for i in 0..count {
+        elements.push(unsafe { all.GetElement(i) }?);
+    }
+    Ok(elements)
+}
+
+/// Find the document-order index of the current cursor (or the focused element) within `elements`.
+fn current_index(
+    automation: &IUIAutomation,
+    elements: &[IUIAutomationElement],
+    cursor: Option<&IUIAutomationElement>,
+) -> Option<usize> {
+    // SAFETY: fall back to the focused element when there is no cursor yet.
+    let start = match cursor {
+        Some(element) => element.clone(),
+        None => unsafe { automation.GetFocusedElement() }.ok()?,
+    };
+    elements.iter().position(|el| {
+        // SAFETY: UIA element identity comparison.
+        unsafe { automation.CompareElements(el, &start) }
+            .map(|equal| equal.as_bool())
+            .unwrap_or(false)
+    })
+}
+
+/// Read an element's control type, defaulting to the unknown type on error.
+fn current_control_type(element: &IUIAutomationElement) -> UIA_CONTROLTYPE_ID {
+    // SAFETY: read the control-type property.
+    unsafe { element.CurrentControlType() }.unwrap_or(UIA_CONTROLTYPE_ID(0))
+}
+
+/// Map a UIA control type to a navigation category, for structured navigation. Headings have no
+/// dedicated UIA control type (they need the HeadingLevel property) and are a follow-up.
+fn control_type_category(control_type: UIA_CONTROLTYPE_ID) -> Option<NavCategory> {
+    if control_type == UIA_ButtonControlTypeId {
+        Some(NavCategory::Button)
+    } else if control_type == UIA_HyperlinkControlTypeId {
+        Some(NavCategory::Link)
+    } else if control_type == UIA_EditControlTypeId
+        || control_type == UIA_ComboBoxControlTypeId
+        || control_type == UIA_CheckBoxControlTypeId
+        || control_type == UIA_RadioButtonControlTypeId
+    {
+        Some(NavCategory::FormField)
+    } else {
+        None
     }
 }
 
