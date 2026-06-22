@@ -7,10 +7,11 @@ license.workspace = true
 authors.workspace = true
 description = "macOS (Accessibility / AXAPI) back-end for the oxeye screen reader."
 
-# Does NOT inherit the workspace `unsafe_code = "forbid"`: the macOS Accessibility API is a C/FFI
-# boundary requiring `unsafe`, isolated to the `ax` adapter; `oxeye-core` stays unsafe-free. Every
-# `unsafe` block must carry a `// SAFETY:` justification — enforced by `undocumented_unsafe_blocks`
-# (denied in CI via `-D warnings`).
+# Does NOT inherit the workspace `unsafe_code = "forbid"`: the macOS Accessibility API and
+# AVFoundation are C/Objective-C FFI boundaries requiring `unsafe`, isolated to the `ax` and
+# `speech` adapters; `oxeye-core` stays unsafe-free. Every `unsafe` block must carry a
+# `// SAFETY:` justification — enforced by `undocumented_unsafe_blocks` (denied in CI via
+# `-D warnings`).
 [lints.rust]
 unsafe_code = "allow"
 missing_docs = "warn"
@@ -30,3 +31,8 @@ tracing = { workspace = true }
 accessibility-sys = "0.1"
 core-foundation = "0.10"
 core-foundation-sys = "0.8" # `CFTypeRef` matching accessibility-sys' FFI signatures
+# Speech via AVFoundation's AVSpeechSynthesizer (objc2 bindings). Lean feature sets: only the
+# AVSpeechSynthesis classes and NSString, not the whole AVFAudio surface.
+objc2 = { version = "0.6", default-features = false, features = ["std"] } # `Retained`
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVSpeechSynthesis"] }

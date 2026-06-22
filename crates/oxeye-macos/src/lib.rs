@@ -6,11 +6,14 @@
 //! same core that drives `oxeye-linux` and `oxeye-windows` drives this; only the
 //! accessibility-tree, event, and output adapters differ.
 //!
-//! AXAPI is a C/FFI boundary requiring `unsafe`, confined to the [`ax`] module (see this crate's
-//! `unsafe_code = "allow"`); `oxeye-core` itself stays `unsafe`-free.
+//! AXAPI and AVFoundation are C/Objective-C FFI boundaries requiring `unsafe`, confined to the
+//! [`ax`] (accessibility) and `speech` (AVFoundation `AVSpeechSynthesizer`) modules (see this
+//! crate's `unsafe_code = "allow"`); `oxeye-core` itself stays `unsafe`-free.
 
 #[cfg(target_os = "macos")]
 mod ax;
+#[cfg(target_os = "macos")]
+mod speech;
 
 /// Run the macOS screen-reader back-end.
 ///
