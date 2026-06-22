@@ -19,12 +19,12 @@ use anyhow::{Context as _, Result};
 use oxeye_core::announcement::{self, Announcement, Element, States};
 use oxeye_core::exclusions::{Context as UiaContext, ExclusionEngine};
 use oxeye_core::{Settings, Verbosity};
+use windows::core::Interface;
 use windows::core::{implement, PCWSTR};
 use windows::Win32::Media::Speech::{ISpVoice, SpVoice, SPF_ASYNC, SPF_PURGEBEFORESPEAK};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
-use windows::core::Interface;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, IUIAutomation,
     IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
