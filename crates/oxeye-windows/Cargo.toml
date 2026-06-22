@@ -7,9 +7,11 @@ license.workspace = true
 authors.workspace = true
 description = "Windows (UI Automation) back-end for the oxeye screen reader."
 
-# This crate does NOT inherit the workspace `unsafe_code = "forbid"` lint: the UI Automation
-# COM API is an FFI boundary that requires `unsafe`. It is isolated to the `uia` adapter; the
-# reusable `oxeye-core` crate stays unsafe-free. The rest of the workspace lints are mirrored.
+# This crate does NOT inherit the workspace `unsafe_code = "forbid"` lint: COM/UIA/SAPI/Win32 are
+# FFI boundaries that require `unsafe`. It is isolated to the `uia` adapter; the reusable
+# `oxeye-core` crate stays unsafe-free. `unsafe` is allowed, but every `unsafe` block MUST carry a
+# `// SAFETY:` justification — enforced by clippy's `undocumented_unsafe_blocks` (denied in CI via
+# `-D warnings`). The rest of the workspace lints are mirrored.
 [lints.rust]
 unsafe_code = "allow"
 missing_docs = "warn"
@@ -17,6 +19,7 @@ unreachable_pub = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
 
 [dependencies]
 oxeye-core = { path = "../oxeye-core", version = "0.1.0" }

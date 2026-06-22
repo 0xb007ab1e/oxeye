@@ -136,8 +136,8 @@ pub(crate) fn run() -> Result<()> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
         .context("CoInitializeEx")?;
-    // SAFETY: create the UI Automation root object via COM.
     let automation: IUIAutomation =
+        // SAFETY: create the UI Automation root object via COM.
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
             .context("creating the UI Automation client")?;
 
@@ -270,17 +270,19 @@ fn navigate(
 fn collect_elements(
     automation: &IUIAutomation,
 ) -> windows::core::Result<Vec<IUIAutomationElement>> {
-    // SAFETY: resolve the foreground window to a UIA element and enumerate its subtree.
-    let hwnd = unsafe { GetForegroundWindow() };
-    let window = unsafe { automation.ElementFromHandle(hwnd) }?;
-    let condition: IUIAutomationCondition = unsafe { automation.CreateTrueCondition() }?;
-    let all: IUIAutomationElementArray = unsafe { window.FindAll(TreeScope_Subtree, &condition) }?;
-    let count = unsafe { all.Length() }?;
-    let mut elements = Vec::with_capacity(count.max(0) as usize);
-    for i in 0..count {
-        elements.push(unsafe { all.GetElement(i) }?);
+    // SAFETY: resolve the foreground window to a UIA element and enumerate its subtree; all
+    // calls operate on handles/objects obtained immediately above and valid for this scope.
+    unsafe {
+        let window = automation.ElementFromHandle(GetForegroundWindow())?;
+        let condition: IUIAutomationCondition = automation.CreateTrueCondition()?;
+        let all: IUIAutomationElementArray = window.FindAll(TreeScope_Subtree, &condition)?;
+        let count = all.Length()?;
+        let mut elements = Vec::with_capacity(count.max(0) as usize);
+        for i in 0..count {
+            elements.push(all.GetElement(i)?);
+        }
+        Ok(elements)
     }
-    Ok(elements)
 }
 
 /// Find the document-order index of the current cursor (or the focused element) within `elements`.
@@ -289,10 +291,12 @@ fn current_index(
     elements: &[IUIAutomationElement],
     cursor: Option<&IUIAutomationElement>,
 ) -> Option<usize> {
-    // SAFETY: fall back to the focused element when there is no cursor yet.
     let start = match cursor {
         Some(element) => element.clone(),
-        None => unsafe { automation.GetFocusedElement() }.ok()?,
+        None => {
+            // SAFETY: fall back to the current focus when there is no cursor yet.
+            unsafe { automation.GetFocusedElement() }.ok()?
+        }
     };
     elements.iter().position(|el| {
         // SAFETY: UIA element identity comparison.
@@ -386,12 +390,11 @@ fn describe(
     exclusions: &ExclusionEngine,
     verbosity: Verbosity,
 ) -> Option<Announcement> {
-    // SAFETY: UIA COM calls reading the element's properties.
+    // SAFETY: read the accessible name property.
     let name = unsafe { element.CurrentName() }
         .map(|bstr| bstr.to_string())
         .unwrap_or_default();
-    let control_type = unsafe { element.CurrentControlType() }.unwrap_or(UIA_CONTROLTYPE_ID(0));
-    let role = control_type_role(control_type);
+    let role = control_type_role(current_control_type(element));
 
     let ident = UiaContext {
         app: "",

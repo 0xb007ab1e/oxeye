@@ -37,8 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - name: Build Windows back-end
-        run: cargo build -p oxeye-windows
+        with:
+          components: clippy
+      # Clippy (which compiles) is the gate — it lints the real UIA code, including
+      # `undocumented_unsafe_blocks` (every `unsafe` must be justified). RUSTFLAGS=-D warnings.
+      - name: Clippy Windows back-end
+        run: cargo clippy -p oxeye-windows --all-targets
       - name: Test Windows back-end
         run: cargo test -p oxeye-windows
 
