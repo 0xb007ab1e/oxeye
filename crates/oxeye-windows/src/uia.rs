@@ -28,8 +28,8 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, IUIAutomation,
-    IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
+    CUIAutomation, ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode, HeadingLevel_None,
+    IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
     IUIAutomationElementArray, IUIAutomationExpandCollapsePattern,
     IUIAutomationFocusChangedEventHandler, IUIAutomationFocusChangedEventHandler_Impl,
     IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
@@ -46,6 +46,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetMessageW, MSG, WM_HOTKEY};
 
 /// Virtual-key codes for the navigation hotkeys (A–Z map to ASCII uppercase).
+const VK_H: u32 = 0x48;
 const VK_B: u32 = 0x42;
 const VK_L: u32 = 0x4C;
 const VK_F: u32 = 0x46;
@@ -154,7 +155,7 @@ pub(crate) fn run() -> Result<()> {
     register_hotkeys().context("RegisterHotKey")?;
 
     eprintln!(
-        "oxeye-windows: focus + Ctrl+Alt+{{B,L,F}} navigation (Shift = previous). Ctrl-C to quit."
+        "oxeye-windows: focus + Ctrl+Alt+{{H,B,L,F}} navigation (Shift = previous). Ctrl-C to quit."
     );
     // The focus sink fires on UIA worker threads; this thread pumps WM_HOTKEY for navigation.
     // The virtual cursor is thread-local here (no cross-thread COM sharing).
@@ -195,6 +196,8 @@ fn register_hotkeys() -> windows::core::Result<()> {
         (4, VK_B, prev),
         (5, VK_L, prev),
         (6, VK_F, prev),
+        (7, VK_H, next),
+        (8, VK_H, prev),
     ];
     for (id, vk, modifiers) in bindings {
         // SAFETY: a null HWND associates the hotkey with this thread's message queue.
@@ -212,6 +215,8 @@ fn hotkey_action(id: i32) -> Option<(NavCategory, Direction)> {
         4 => Some((NavCategory::Button, Direction::Previous)),
         5 => Some((NavCategory::Link, Direction::Previous)),
         6 => Some((NavCategory::FormField, Direction::Previous)),
+        7 => Some((NavCategory::Heading, Direction::Next)),
+        8 => Some((NavCategory::Heading, Direction::Previous)),
         _ => None,
     }
 }
@@ -232,10 +237,8 @@ fn navigate(
 ) {
     match collect_elements(automation) {
         Ok(elements) => {
-            let categories: Vec<Option<NavCategory>> = elements
-                .iter()
-                .map(|el| control_type_category(current_control_type(el)))
-                .collect();
+            let categories: Vec<Option<NavCategory>> =
+                elements.iter().map(element_category).collect();
             let from = current_index(automation, &elements, cursor.as_ref());
             if let Some(index) = navigation::find(&categories, from, target, direction) {
                 let element = elements[index].clone();
@@ -305,8 +308,19 @@ fn current_control_type(element: &IUIAutomationElement) -> UIA_CONTROLTYPE_ID {
     unsafe { element.CurrentControlType() }.unwrap_or(UIA_CONTROLTYPE_ID(0))
 }
 
-/// Map a UIA control type to a navigation category, for structured navigation. Headings have no
-/// dedicated UIA control type (they need the HeadingLevel property) and are a follow-up.
+/// Classify an element for structured navigation: a heading (any element with a heading level
+/// set — web/document content), else by its control type.
+fn element_category(element: &IUIAutomationElement) -> Option<NavCategory> {
+    // SAFETY: read the heading level; absent/None means it is not a heading.
+    if let Ok(level) = unsafe { element.CurrentHeadingLevel() } {
+        if level != HeadingLevel_None {
+            return Some(NavCategory::Heading);
+        }
+    }
+    control_type_category(current_control_type(element))
+}
+
+/// Map a UIA control type to a navigation category (buttons, links, form controls).
 fn control_type_category(control_type: UIA_CONTROLTYPE_ID) -> Option<NavCategory> {
     if control_type == UIA_ButtonControlTypeId {
         Some(NavCategory::Button)
