@@ -707,6 +707,7 @@ dependencies = [
  "oxeye-core",
  "tracing",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
