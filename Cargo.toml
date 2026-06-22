@@ -9,6 +9,7 @@ members = [
     "crates/oxeye-cli",
     "crates/oxeye-linux",
     "crates/oxeye-windows",
+    "crates/oxeye-macos",
 ]
 
 [workspace.package]
