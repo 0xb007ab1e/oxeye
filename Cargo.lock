@@ -730,6 +730,7 @@ dependencies = [
  "anyhow",
  "clap",
  "oxeye-core",
+ "ssip-client-async",
 ]
 
 [[package]]

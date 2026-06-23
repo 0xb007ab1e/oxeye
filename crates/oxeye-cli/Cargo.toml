@@ -19,3 +19,5 @@ workspace = true
 oxeye-core = { path = "../oxeye-core", version = "0.1.0" }
 clap = { workspace = true }
 anyhow = { workspace = true }
+# Synchronous SSIP client (no async runtime) to enumerate speech-dispatcher modules/voices.
+ssip-client-async = "0.19"

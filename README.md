@@ -136,6 +136,21 @@ Move through it by element **type** with a virtual cursor (it starts wherever fo
 **Shift** for the previous one. The target is announced (e.g. *"Save, button"*); at the end you
 hear *"no next button"*.
 
+## Voices & speech
+
+Pick the voice and tune the speech — oxeye uses any voice your speech-dispatcher install offers
+(open-source by default: **espeak-ng**, with **Piper** for neural voices):
+
+```sh
+oxeye voices list                  # installed modules + a per-language voice summary
+oxeye voices list --language en    # voices for a language (prefix match)
+oxeye config voice <name>          # select a voice (default = engine default)
+oxeye config module piper          # switch output module (e.g. espeak-ng / piper)
+oxeye config rate 60               # rate / pitch / volume, 0–100
+```
+
+Full guide, including Piper setup: [`docs/voices.md`](docs/voices.md).
+
 ## Braille
 
 Enable braille with `oxeye config braille on`. Each announcement is then also translated to

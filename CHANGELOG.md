@@ -9,6 +9,11 @@ between minor versions.
 
 ### Added
 
+- **`oxeye-cli`** — `oxeye voices list` enumerates speech-dispatcher output modules and the
+  active module's synthesis voices via SSIP. With no filter it prints a per-language summary
+  (engines like espeak-ng expose tens of thousands of voices); `--language <tag>` narrows by a
+  case-insensitive prefix (e.g. `en`). Documented in [`docs/voices.md`](docs/voices.md) alongside
+  espeak-ng (default) and Piper (neural OSS) guidance.
 - **`oxeye-cli`** — speech configuration commands: `oxeye config voice|module|language|rate|pitch|volume`
   set the synthesis voice, speech-dispatcher output module, language (BCP-47), and rate/pitch/volume
   (0–100, validated). For `voice`/`module`/`language`, the value `default` reverts to the engine

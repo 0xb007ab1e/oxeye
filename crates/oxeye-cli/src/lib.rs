@@ -111,6 +111,106 @@ pub fn optional_setting(value: &str) -> Option<String> {
     }
 }
 
+/// A synthesis voice as listed for the user. Engine-agnostic — mirrors speech-dispatcher's voice
+/// fields without depending on the SSIP types here, so the formatting stays unit-testable.
+pub struct VoiceInfo {
+    /// Voice name (what `oxeye config voice <name>` expects).
+    pub name: String,
+    /// Language tag, if the engine reports one.
+    pub language: Option<String>,
+    /// Dialect/variant, if any.
+    pub dialect: Option<String>,
+}
+
+/// Cap on how many individual voices a filtered listing prints, so a language with hundreds of
+/// speaker variants (e.g. espeak-ng) stays readable; the remainder is summarised as a count.
+const VOICE_LIST_CAP: usize = 60;
+
+/// The ` [lang-dialect]` suffix shown after a voice name (empty when no language is reported).
+fn voice_tag(voice: &VoiceInfo) -> String {
+    match (&voice.language, &voice.dialect) {
+        (Some(lang), Some(dialect)) => format!(" [{lang}-{dialect}]"),
+        (Some(lang), None) => format!(" [{lang}]"),
+        _ => String::new(),
+    }
+}
+
+/// Render output modules and the current module's voices for `oxeye voices list`.
+///
+/// Engines like espeak-ng expose tens of thousands of voices (every language × speaker variant),
+/// so with no `language_filter` this prints a **per-language summary** (each language tag and its
+/// voice count) and points the user at `--language`. With a filter, it lists the matching voices
+/// by name (capped at [`VOICE_LIST_CAP`], with the remainder summarised). Voices are per the
+/// active output module — switch it with `oxeye config module <name>` and re-run.
+#[must_use]
+pub fn format_voices(
+    modules: &[String],
+    voices: &[VoiceInfo],
+    language_filter: Option<&str>,
+) -> String {
+    let module_list = if modules.is_empty() {
+        "(none)".to_owned()
+    } else {
+        modules.join(", ")
+    };
+    let mut lines = vec![format!("output modules: {module_list}")];
+
+    match language_filter {
+        Some(filter) => {
+            // Prefix match (case-insensitive): engines report full locales (e.g. `en-GB`,
+            // `en-US`), so `en` should match them all, while `en-gb` narrows to one.
+            let wanted = filter.to_ascii_lowercase();
+            let matching: Vec<&VoiceInfo> = voices
+                .iter()
+                .filter(|v| {
+                    v.language
+                        .as_deref()
+                        .is_some_and(|lang| lang.to_ascii_lowercase().starts_with(&wanted))
+                })
+                .collect();
+            if matching.is_empty() {
+                lines.push(format!(
+                    "no voices for language '{filter}' in the current module"
+                ));
+            } else {
+                lines.push(format!(
+                    "voices for language '{filter}' ({}):",
+                    matching.len()
+                ));
+                for voice in matching.iter().take(VOICE_LIST_CAP) {
+                    lines.push(format!("  {}{}", voice.name, voice_tag(voice)));
+                }
+                if matching.len() > VOICE_LIST_CAP {
+                    lines.push(format!("  … and {} more", matching.len() - VOICE_LIST_CAP));
+                }
+            }
+        }
+        None => {
+            let mut by_language: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            let mut untagged = 0usize;
+            for voice in voices {
+                match &voice.language {
+                    Some(lang) => *by_language.entry(lang.clone()).or_default() += 1,
+                    None => untagged += 1,
+                }
+            }
+            lines.push(format!(
+                "{} voices across {} languages — refine with `oxeye voices list --language <tag>`:",
+                voices.len(),
+                by_language.len()
+            ));
+            for (lang, count) in &by_language {
+                lines.push(format!("  {lang} ({count})"));
+            }
+            if untagged > 0 {
+                lines.push(format!("  (untagged) ({untagged})"));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
 /// A short, human-readable summary of the current configuration.
 #[must_use]
 pub fn format_config(settings: &Settings) -> String {
@@ -269,5 +369,67 @@ mod tests {
     fn optional_setting_treats_default_as_clear() {
         assert_eq!(super::optional_setting("default"), None);
         assert_eq!(super::optional_setting("Alan"), Some("Alan".to_owned()));
+    }
+
+    fn voice(name: &str, language: Option<&str>, dialect: Option<&str>) -> super::VoiceInfo {
+        super::VoiceInfo {
+            name: name.to_owned(),
+            language: language.map(str::to_owned),
+            dialect: dialect.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn format_voices_summarizes_by_language_without_filter() {
+        use super::format_voices;
+        let modules = vec!["espeak-ng".to_owned(), "piper".to_owned()];
+        let voices = vec![
+            voice("Alan", Some("en"), Some("us")),
+            voice("Daniel", Some("en"), Some("gb")),
+            voice("Klaus", Some("de"), None),
+        ];
+        let out = format_voices(&modules, &voices, None);
+        assert!(out.contains("output modules: espeak-ng, piper"));
+        assert!(
+            out.contains("3 voices across 2 languages"),
+            "summary header"
+        );
+        assert!(out.contains("en (2)"), "english count");
+        assert!(out.contains("de (1)"), "german count");
+    }
+
+    #[test]
+    fn format_voices_filters_by_language_prefix_case_insensitively() {
+        use super::format_voices;
+        // Full locales (en-GB / en-US) must match the bare prefix `EN`, German must not.
+        let voices = vec![
+            voice("Daniel", Some("en-GB"), None),
+            voice("Alan", Some("en-US"), None),
+            voice("Klaus", Some("de-DE"), None),
+        ];
+        let out = format_voices(&[], &voices, Some("EN"));
+        assert!(
+            out.contains("voices for language 'EN' (2):"),
+            "both English locales"
+        );
+        assert!(out.contains("Daniel [en-GB]"));
+        assert!(out.contains("Alan [en-US]"));
+        assert!(!out.contains("Klaus"), "non-matching language excluded");
+    }
+
+    #[test]
+    fn format_voices_reports_no_match_for_unknown_language() {
+        use super::format_voices;
+        let voices = vec![voice("Alan", Some("en"), None)];
+        let out = format_voices(&[], &voices, Some("zz"));
+        assert!(out.contains("no voices for language 'zz'"));
+    }
+
+    #[test]
+    fn format_voices_handles_empty() {
+        use super::format_voices;
+        let out = format_voices(&[], &[], None);
+        assert!(out.contains("output modules: (none)"));
+        assert!(out.contains("0 voices across 0 languages"));
     }
 }

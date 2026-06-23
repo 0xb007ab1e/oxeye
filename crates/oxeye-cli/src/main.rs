@@ -8,6 +8,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use oxeye_core::{Action, ExclusionRule, Settings, Verbosity};
+use ssip_client_async::fifo::synchronous::Builder as SsipBuilder;
+use ssip_client_async::{ClientName, Response};
 
 /// Configure the oxeye screen reader.
 #[derive(Parser)]
@@ -28,6 +30,21 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    /// Discover speech voices and output modules from speech-dispatcher.
+    Voices {
+        #[command(subcommand)]
+        command: VoicesCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum VoicesCommand {
+    /// List installed output modules and the current module's synthesis voices.
+    List {
+        /// Show only voices for this language tag (e.g. `en`); omit for a per-language summary.
+        #[arg(long)]
+        language: Option<String>,
     },
 }
 
@@ -166,7 +183,52 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Exclusions { command } => run_exclusions(command),
         Command::Config { command } => run_config(command),
+        Command::Voices { command } => run_voices(command),
     }
+}
+
+/// Dispatch a `voices` subcommand: query speech-dispatcher (SSIP) for modules and voices.
+fn run_voices(command: VoicesCommand) -> Result<()> {
+    match command {
+        VoicesCommand::List { language } => {
+            let mut client = SsipBuilder::new().build().context(
+                "connecting to speech-dispatcher (is it installed and running? \
+                 try `spd-say hello` to start it, then retry)",
+            )?;
+            // SSIP is write-then-read: name the client, then read each LIST's reply in turn.
+            client
+                .set_client_name(ClientName::new("oxeye", "voices"))
+                .context("naming SSIP client")?;
+            client
+                .check_client_name_set()
+                .context("confirming SSIP client name")?;
+            client
+                .list_output_modules()
+                .context("requesting output modules")?;
+            let modules = match client.receive().context("reading output modules")? {
+                Response::OutputModulesListSent(modules) => modules,
+                _ => Vec::new(),
+            };
+            client
+                .list_synthesis_voices()
+                .context("requesting synthesis voices")?;
+            let voices = client
+                .receive_synthesis_voices()
+                .context("reading synthesis voices")?
+                .into_iter()
+                .map(|voice| oxeye_cli::VoiceInfo {
+                    name: voice.name,
+                    language: voice.language,
+                    dialect: voice.dialect,
+                })
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                oxeye_cli::format_voices(&modules, &voices, language.as_deref())
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Dispatch a `config` subcommand: show or change general settings.
