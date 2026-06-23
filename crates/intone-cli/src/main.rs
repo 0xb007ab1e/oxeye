@@ -321,7 +321,10 @@ fn run_config(command: ConfigCommand) -> Result<()> {
                     println!("no language voice was set for {tag}");
                 }
             } else {
-                settings.speech.by_language.insert(tag.clone(), voice.clone());
+                settings
+                    .speech
+                    .by_language
+                    .insert(tag.clone(), voice.clone());
                 println!("language {tag} → voice {voice}");
             }
             settings.save().context("saving settings")?;

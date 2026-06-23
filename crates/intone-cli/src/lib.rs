@@ -390,8 +390,12 @@ mod tests {
     fn config_summary_reports_language_voices() {
         let mut s = Settings::default();
         assert!(super::format_config(&s).contains("language voices: (none)"));
-        s.speech.by_language.insert("en".to_owned(), "Alan".to_owned());
-        s.speech.by_language.insert("es".to_owned(), "Pedro".to_owned());
+        s.speech
+            .by_language
+            .insert("en".to_owned(), "Alan".to_owned());
+        s.speech
+            .by_language
+            .insert("es".to_owned(), "Pedro".to_owned());
         // BTreeMap keeps tags sorted, so the display order is stable.
         assert!(super::format_config(&s).contains("language voices: en→Alan, es→Pedro"));
     }
