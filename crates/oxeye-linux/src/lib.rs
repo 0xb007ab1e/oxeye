@@ -903,7 +903,10 @@ mod caret_action_tests {
 
     #[test]
     fn deletions_paired_move_is_suppressed() {
-        assert_eq!(caret_action(false, None, true, Some(3)), CaretAction::Nothing);
+        assert_eq!(
+            caret_action(false, None, true, Some(3)),
+            CaretAction::Nothing
+        );
     }
 
     #[test]
