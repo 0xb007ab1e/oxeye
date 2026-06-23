@@ -147,6 +147,7 @@ oxeye voices list --language en    # voices for a language (prefix match)
 oxeye config voice <name>          # select a voice (default = engine default)
 oxeye config module piper          # switch output module (e.g. espeak-ng / piper)
 oxeye config rate 60               # rate / pitch / volume, 0–100
+oxeye config rotation Alan Klaus   # voices to cycle with Ctrl+Alt+V while running
 ```
 
 Full guide, including Piper setup: [`docs/voices.md`](docs/voices.md).

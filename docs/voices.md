@@ -52,6 +52,22 @@ voices, switch to it first (`oxeye config module <name>`) and re-run `oxeye voic
 > `oxeye voices list` queries the speech-dispatcher daemon; if it isn't running, start it once
 > (e.g. `spd-say hello`) and retry.
 
+## Switching voices on the fly
+
+Configure a list of voices to cycle through, then press **Ctrl+Alt+V** while the reader is
+running to jump to the next one — the new voice announces its own name so you hear it
+immediately:
+
+```console
+$ oxeye config rotation Alan Klaus "English (Great Britain)"   # set the cycle (in order)
+$ oxeye config rotation                                        # no names clears it
+$ oxeye config show                                            # shows "voice rotation: …"
+```
+
+Each press advances through the list and wraps around. With no rotation configured, Ctrl+Alt+V
+says so. (The switch applies to the running session; the persisted default voice is still
+`oxeye config voice <name>`.)
+
 ## Output modules (OSS engines)
 
 ### espeak-ng — the default

@@ -9,6 +9,10 @@ between minor versions.
 
 ### Added
 
+- **Live voice cycling** — configure a rotation with `oxeye config rotation <names…>` (empty
+  clears it), then press **Ctrl+Alt+V** while the reader is running to switch to the next voice;
+  the new voice announces its own name. Adds `[speech] rotation` to settings (core) and reports it
+  in `oxeye config show`. (Voices Phase 2; see [`docs/voices.md`](docs/voices.md).)
 - **`oxeye-cli`** — `oxeye voices list` enumerates speech-dispatcher output modules and the
   active module's synthesis voices via SSIP. With no filter it prints a per-language summary
   (engines like espeak-ng expose tens of thousands of voices); `--language <tag>` narrows by a

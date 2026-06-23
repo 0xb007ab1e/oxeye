@@ -92,6 +92,11 @@ enum ConfigCommand {
         /// Volume, 0–100.
         value: u8,
     },
+    /// Set the voices the in-app switch hotkey (Ctrl+Alt+V) cycles through; omit all to clear.
+    Rotation {
+        /// Voice names in cycle order (space-separated); none clears the rotation.
+        names: Vec<String>,
+    },
 }
 
 /// An on/off switch for a boolean setting.
@@ -288,6 +293,17 @@ fn run_config(command: ConfigCommand) -> Result<()> {
             settings.speech.volume = oxeye_cli::checked_level(value)?;
             settings.save().context("saving settings")?;
             println!("volume set to {}", settings.speech.volume);
+        }
+        ConfigCommand::Rotation { names } => {
+            let mut settings = Settings::load().context("loading settings")?;
+            let count = names.len();
+            settings.speech.rotation = names;
+            settings.save().context("saving settings")?;
+            if count == 0 {
+                println!("voice rotation cleared");
+            } else {
+                println!("voice rotation set ({count} voices)");
+            }
         }
     }
     Ok(())

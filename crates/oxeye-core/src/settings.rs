@@ -56,6 +56,10 @@ pub struct Speech {
     /// speech-dispatcher output module, e.g. `"espeak-ng"`; `None` = daemon default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_module: Option<String>,
+    /// Voice names to cycle through with the in-app switch hotkey (Ctrl+Alt+V on Linux). Empty
+    /// disables cycling. Each name is what `oxeye config voice <name>` would accept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rotation: Vec<String>,
 }
 
 impl Default for Speech {
@@ -67,6 +71,7 @@ impl Default for Speech {
             voice: None,
             language: None,
             output_module: None,
+            rotation: Vec::new(),
         }
     }
 }

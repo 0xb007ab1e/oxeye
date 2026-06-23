@@ -51,6 +51,7 @@ const KEYSYM_H: u32 = 0x68;
 const KEYSYM_B: u32 = 0x62;
 const KEYSYM_L: u32 = 0x6c;
 const KEYSYM_F: u32 = 0x66;
+const KEYSYM_V: u32 = 0x76;
 
 /// X11 modifier-mask bits as reported in the `KeyEvent` `state` field.
 const MOD_SHIFT: u32 = 0x01;
@@ -157,6 +158,20 @@ impl Speaker {
             }
         }
     }
+
+    /// Switch the live synthesis voice (best-effort). No-op when speech isn't connected; the
+    /// SET reply is read to keep the SSIP response stream in step.
+    async fn set_voice(&mut self, voice: &str) {
+        if let Some(client) = self.client.as_mut() {
+            if client
+                .set_synthesis_voice(ClientScope::Current, voice)
+                .await
+                .is_ok()
+            {
+                let _ = client.receive().await;
+            }
+        }
+    }
 }
 
 /// KWin's accessibility keyboard monitor — the sanctioned global-key path on Wayland.
@@ -233,13 +248,14 @@ fn key_grab_spec() -> (Vec<u32>, Vec<(u32, u32)>) {
         (KEYSYM_L, ctrl_alt_shift),
         (KEYSYM_F, ctrl_alt),
         (KEYSYM_F, ctrl_alt_shift),
+        (KEYSYM_V, ctrl_alt),
     ];
     (Vec::new(), keystrokes)
 }
 
 #[cfg(test)]
 mod key_grab_tests {
-    use super::{key_grab_spec, KEYSYM_S, MOD_ALT, MOD_CONTROL};
+    use super::{key_grab_spec, KEYSYM_S, KEYSYM_V, MOD_ALT, MOD_CONTROL};
 
     #[test]
     fn never_grabs_standalone_modifier_keys() {
@@ -253,7 +269,11 @@ mod key_grab_tests {
         // The dedicated hotkeys are still consumed, but only as full Ctrl+Alt combos.
         let ctrl_alt = MOD_CONTROL | MOD_ALT;
         assert!(keystrokes.contains(&(KEYSYM_S, ctrl_alt)));
-        assert_eq!(keystrokes.len(), 10);
+        assert!(
+            keystrokes.contains(&(KEYSYM_V, ctrl_alt)),
+            "Ctrl+Alt+V (voice cycle) is grabbed"
+        );
+        assert_eq!(keystrokes.len(), 11);
         assert!(
             keystrokes.iter().all(|(_, m)| m & ctrl_alt == ctrl_alt),
             "every grabbed keystroke carries Ctrl+Alt, never a bare key"
@@ -367,6 +387,9 @@ pub async fn run() -> Result<()> {
     let mut focused_app: Option<String> = None;
     // Virtual navigation cursor (sender, path) for by-type movement; follows focus.
     let mut nav_cursor: Option<(String, String)> = None;
+    // Voices the Ctrl+Alt+V hotkey cycles through, and the next one to apply.
+    let voice_rotation = settings.speech.rotation.clone();
+    let mut voice_index = 0usize;
 
     loop {
         tokio::select! {
@@ -530,6 +553,23 @@ pub async fn run() -> Result<()> {
                         speaker
                             .announce(&format!("time, {}", current_time()), true)
                             .await;
+                    }
+                    KEYSYM_V if has_ctrl_alt(args.state) => {
+                        // Cycle to the next configured voice and confirm it in that voice.
+                        if voice_rotation.is_empty() {
+                            speaker
+                                .announce(
+                                    "no voice rotation configured; set one with oxeye config rotation",
+                                    true,
+                                )
+                                .await;
+                        } else {
+                            let name = voice_rotation[voice_index].clone();
+                            voice_index = (voice_index + 1) % voice_rotation.len();
+                            speaker.set_voice(&name).await;
+                            last_text = Some(name.clone());
+                            speaker.announce(&name, true).await;
+                        }
                     }
                     KEYSYM_S if has_ctrl_alt(args.state) => {
                         let summary = match &focused_app {

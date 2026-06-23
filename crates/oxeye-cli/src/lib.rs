@@ -222,6 +222,11 @@ pub fn format_config(settings: &Settings) -> String {
     let braille = if settings.braille { "on" } else { "off" };
     let speech = &settings.speech;
     let or_default = |opt: &Option<String>| opt.clone().unwrap_or_else(|| "default".to_owned());
+    let rotation = if speech.rotation.is_empty() {
+        "(none)".to_owned()
+    } else {
+        speech.rotation.join(", ")
+    };
     format!(
         "verbosity: {}\n\
          network: {network}\n\
@@ -230,6 +235,7 @@ pub fn format_config(settings: &Settings) -> String {
          voice: {}\n\
          language: {}\n\
          output module: {}\n\
+         voice rotation: {rotation}\n\
          exclusion rules: {}",
         verbosity_label(settings.verbosity),
         speech.rate,
@@ -356,6 +362,17 @@ mod tests {
         let out = super::format_config(&s);
         assert!(out.contains("voice: Alan"));
         assert!(out.contains("rate 70"));
+    }
+
+    #[test]
+    fn config_summary_reports_voice_rotation() {
+        let mut s = Settings::default();
+        assert!(
+            super::format_config(&s).contains("voice rotation: (none)"),
+            "empty rotation shows (none)"
+        );
+        s.speech.rotation = vec!["Alan".to_owned(), "Klaus".to_owned()];
+        assert!(super::format_config(&s).contains("voice rotation: Alan, Klaus"));
     }
 
     #[test]
