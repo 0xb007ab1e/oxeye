@@ -393,8 +393,15 @@ pub async fn run() -> Result<()> {
                             path: state.path().to_string(),
                             password: focused.role == "password text",
                             last: None,
+                            pending_insert: None,
                             suppress_caret_at: None,
                         });
+                        tracing::debug!(
+                            app = %focused.app,
+                            role = %focused.role,
+                            has_text = focused.has_text,
+                            "focused element (caret tracking when has_text)"
+                        );
                         let ctx = ExclusionContext {
                             app: &focused.app,
                             role: &focused.role,
@@ -416,6 +423,7 @@ pub async fn run() -> Result<()> {
                         speaker.announce(&ann.text, ann.interrupt).await;
                     }
                     Event::Object(ObjectEvents::TextCaretMoved(moved)) => {
+                        tracing::debug!(pos = moved.position, "text-caret-moved event");
                         let Some(tracker) = caret.as_mut() else { continue };
                         if moved.sender().to_string() != tracker.sender
                             || moved.path().to_string() != tracker.path
@@ -423,19 +431,26 @@ pub async fn run() -> Result<()> {
                             continue; // a caret move on some other (stale) object
                         }
                         let new = moved.position;
+                        let pending_insert = tracker.pending_insert.take();
                         // Suppress the caret move a deletion triggers (the removed text was
                         // announced by the text-changed handler instead).
                         let suppressed = tracker.suppress_caret_at.take() == Some(new);
-                        // Otherwise speak a genuine move — but never echo a password field, and
-                        // treat the first event after focus as a baseline (the caret placed on
-                        // focus).
-                        let spoken = if tracker.password || suppressed {
-                            None
-                        } else {
-                            match tracker.last {
-                                None => None,
-                                Some(last) => read_caret_text(&conn, &moved, last, new).await,
+                        let spoken = match caret_action(
+                            tracker.password,
+                            pending_insert,
+                            suppressed,
+                            tracker.last,
+                        ) {
+                            // A typed/pasted insertion: echo the inserted text read straight from
+                            // the field (robust even for the first event after focus).
+                            CaretAction::Inserted { start } => {
+                                read_inserted_text(&conn, &moved, start, new).await
                             }
+                            // A bare navigation move: echo the traversed character/word/line.
+                            CaretAction::Moved { from } => {
+                                read_caret_text(&conn, &moved, from, new).await
+                            }
+                            CaretAction::Nothing => None,
                         };
                         tracker.last = Some(new);
                         if let Some(text) = spoken {
@@ -444,24 +459,29 @@ pub async fn run() -> Result<()> {
                         }
                     }
                     Event::Object(ObjectEvents::TextChanged(changed)) => {
+                        tracing::debug!(op = ?changed.operation, "text-changed event");
                         let Some(tracker) = caret.as_mut() else { continue };
                         if changed.sender().to_string() != tracker.sender
                             || changed.path().to_string() != tracker.path
                         {
                             continue;
                         }
-                        // Inserts are echoed by the accompanying caret move; only announce
-                        // deletions here, suppressing the caret move they trigger.
-                        if changed.operation != Operation::Delete {
-                            continue;
-                        }
-                        tracker.suppress_caret_at = Some(changed.start_pos);
-                        if tracker.password {
-                            continue; // never reveal a password field's content
-                        }
-                        if let Some(text) = describe_change(&changed.text) {
-                            last_text = Some(text.clone());
-                            speaker.announce(&text, true).await;
+                        match changed.operation {
+                            // Mark the insertion; the paired caret move reads and echoes the new
+                            // character(s) from the field itself (so even the first one speaks).
+                            Operation::Insert => {
+                                tracker.pending_insert = Some(changed.start_pos);
+                            }
+                            // Announce the removed text here and suppress the caret move it fires.
+                            Operation::Delete => {
+                                tracker.suppress_caret_at = Some(changed.start_pos);
+                                if !tracker.password {
+                                    if let Some(text) = describe_change(&changed.text) {
+                                        last_text = Some(text.clone());
+                                        speaker.announce(&text, true).await;
+                                    }
+                                }
+                            }
                         }
                     }
                     Event::Object(ObjectEvents::TextSelectionChanged(sel)) => {
@@ -814,6 +834,92 @@ fn clean_text(raw: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// What a caret move should announce, decided purely from tracker state; the (async) text reads
+/// follow from the variant.
+#[derive(Debug, PartialEq, Eq)]
+enum CaretAction {
+    /// A text insertion starting at this offset — read and echo the inserted run.
+    Inserted { start: i32 },
+    /// A bare navigation move from this previous offset — read and echo the traversed text.
+    Moved { from: i32 },
+    /// Nothing to announce: a password field, a deletion's paired move, or the first bare move
+    /// after focus (which only establishes the baseline).
+    Nothing,
+}
+
+/// Decide what a caret move announces from the tracker's state. An **insertion is echoed even
+/// with no prior baseline** — the first typed character must speak (the bug this guards). A
+/// password never echoes; a deletion's paired move is suppressed; an unbaselined bare move is
+/// silent (it just sets the baseline). Pure, so the dispatch is unit-tested without AT-SPI.
+fn caret_action(
+    password: bool,
+    pending_insert: Option<i32>,
+    suppressed: bool,
+    last: Option<i32>,
+) -> CaretAction {
+    if password {
+        CaretAction::Nothing
+    } else if let Some(start) = pending_insert {
+        CaretAction::Inserted { start }
+    } else if suppressed {
+        CaretAction::Nothing
+    } else {
+        match last {
+            Some(from) => CaretAction::Moved { from },
+            None => CaretAction::Nothing,
+        }
+    }
+}
+
+#[cfg(test)]
+mod caret_action_tests {
+    use super::{caret_action, CaretAction};
+
+    #[test]
+    fn insertion_is_announced_even_as_the_first_event_after_focus() {
+        // Regression: the first typed character was swallowed because the first caret event had
+        // no baseline. An insertion must announce regardless of `last`.
+        assert_eq!(
+            caret_action(false, Some(0), false, None),
+            CaretAction::Inserted { start: 0 }
+        );
+    }
+
+    #[test]
+    fn insertion_takes_precedence_over_a_suppressed_move() {
+        assert_eq!(
+            caret_action(false, Some(2), true, Some(2)),
+            CaretAction::Inserted { start: 2 }
+        );
+    }
+
+    #[test]
+    fn password_field_never_echoes() {
+        assert_eq!(
+            caret_action(true, Some(0), false, Some(3)),
+            CaretAction::Nothing
+        );
+    }
+
+    #[test]
+    fn deletions_paired_move_is_suppressed() {
+        assert_eq!(caret_action(false, None, true, Some(3)), CaretAction::Nothing);
+    }
+
+    #[test]
+    fn first_bare_move_after_focus_only_baselines() {
+        assert_eq!(caret_action(false, None, false, None), CaretAction::Nothing);
+    }
+
+    #[test]
+    fn later_bare_move_is_navigation() {
+        assert_eq!(
+            caret_action(false, None, false, Some(2)),
+            CaretAction::Moved { from: 2 }
+        );
+    }
+}
+
 /// Tracks the caret in the currently focused editable text object so caret-moved events can
 /// announce the traversed character (or the word/line on a larger jump) relative to the last
 /// known position.
@@ -822,8 +928,12 @@ struct CaretTracker {
     path: String,
     /// A password field — caret moves must never echo its characters.
     password: bool,
-    /// Last known caret offset; `None` until the first event after focus (the baseline).
+    /// Last known caret offset; `None` until the first caret move after focus (the baseline).
     last: Option<i32>,
+    /// Start offset of a just-seen insertion. The paired caret move reads and echoes the
+    /// inserted text (from here to the new caret) straight from the Text interface, so a typed
+    /// character is announced even when it is the first event after focus. Consumed on that move.
+    pending_insert: Option<i32>,
     /// Offset the caret will land on after a deletion: the matching caret move is suppressed
     /// (the removed text is announced instead). Consumed on the next caret move.
     suppress_caret_at: Option<i32>,
@@ -833,6 +943,40 @@ struct CaretTracker {
 const GRAN_CHAR: u32 = 0;
 const GRAN_WORD_START: u32 = 1;
 const GRAN_LINE_START: u32 = 5;
+
+/// Read the text inserted between `start` (the insertion point) and `new` (the caret after it)
+/// to echo a typed or pasted edit — the whitespace-aware char form for a single character,
+/// otherwise the inserted run. Caching is **off** (per-method `Get`, never `GetAll` — see issue
+/// #6). Best-effort: `None` on error or an empty/degenerate range.
+async fn read_inserted_text(
+    conn: &AccessibilityConnection,
+    ev: &TextCaretMovedEvent,
+    start: i32,
+    new: i32,
+) -> Option<String> {
+    if new <= start {
+        return None;
+    }
+    let proxy = TextProxy::builder(conn.connection())
+        .destination(ev.sender())
+        .ok()?
+        .path(ev.path())
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()?;
+    if new - start == 1 {
+        let (s, _, _) = proxy
+            .get_text_at_offset(start.max(0), GRAN_CHAR)
+            .await
+            .ok()?;
+        Some(speak_char(&s))
+    } else {
+        let inserted = proxy.get_text(start.max(0), new).await.ok()?;
+        clean_text(&inserted)
+    }
+}
 
 /// Read the text to announce for a caret move from `last` to `new`: the single character
 /// traversed on a one-step move, otherwise the word at the caret (falling back to the line).
@@ -853,6 +997,7 @@ async fn read_caret_text(
         .await
         .ok()?;
     match new - last {
+        0 => None, // no movement (e.g. caret re-placed at the same offset) — nothing to read
         1 => {
             let (s, _, _) = proxy
                 .get_text_at_offset((new - 1).max(0), GRAN_CHAR)

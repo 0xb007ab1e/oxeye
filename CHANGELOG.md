@@ -9,6 +9,12 @@ between minor versions.
 
 ### Fixed
 
+- **`oxeye-linux`** — the first character typed into a freshly focused field is now announced.
+  Typed text is echoed from the AT-SPI insertion event (reading the inserted run straight from
+  the field) rather than inferred from a caret delta against a baseline that didn't exist yet
+  for the first keystroke. Caret-move dispatch was factored into a pure, unit-tested
+  `caret_action`. (Note: apps that don't expose AT-SPI text — e.g. Electron, terminals — still
+  can't be echoed; that's an app limitation, not oxeye.)
 - **`oxeye-linux`** — hotkey setup no longer registers Control/Alt as standalone grabbed
   modifiers in KWin's `KeyboardMonitor.SetKeyGrabs`. KWin *consumes* any keysym in that list,
   so it swallowed every Control/Alt press before the focused app saw it — locking out all
