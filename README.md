@@ -149,6 +149,7 @@ intone config module piper          # switch output module (e.g. espeak-ng / pip
 intone config rate 60               # rate / pitch / volume, 0–100
 intone config rotation Alan Klaus   # voices to cycle with Ctrl+Alt+V while running
 intone config voice-lang es Pedro   # auto-switch voice by the content's language
+intone config voice-context ui Klaus # a distinct voice for time/structure/navigation
 ```
 
 Full guide, including Piper setup: [`docs/voices.md`](docs/voices.md).

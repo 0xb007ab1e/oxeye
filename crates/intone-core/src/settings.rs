@@ -66,6 +66,11 @@ pub struct Speech {
     /// it serialises as the `[speech.by_language]` sub-table after the scalar fields.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub by_language: BTreeMap<String, String>,
+    /// Map of context (`content` / `ui`) → voice name, to read application content and the
+    /// reader's own meta-announcements (time, structure, navigation, hotkey feedback) in
+    /// different voices. Empty disables context voices. Serialises as `[speech.by_context]`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_context: BTreeMap<String, String>,
 }
 
 impl Default for Speech {
@@ -79,6 +84,27 @@ impl Default for Speech {
             output_module: None,
             rotation: Vec::new(),
             by_language: BTreeMap::new(),
+            by_context: BTreeMap::new(),
+        }
+    }
+}
+
+/// The kind of thing being announced, used to choose a context-specific voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechContext {
+    /// Application content being read: focus readout, caret/typed text, selections.
+    Content,
+    /// The reader's own meta-announcements: time, structure summary, navigation, hotkey feedback.
+    Ui,
+}
+
+impl SpeechContext {
+    /// The `by_context` map key for this context.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::Ui => "ui",
         }
     }
 }
@@ -104,6 +130,28 @@ pub fn voice_for_language<'a>(
         })
         .max_by_key(|(tag, _)| tag.len())
         .map(|(_, voice)| voice.as_str())
+}
+
+/// Resolve which voice an announcement should use, by precedence. For **content**: a
+/// language-matched voice (most specific) wins, then the configured `content` context voice, then
+/// the default voice. For **UI** meta-announcements: the `ui` context voice, then the default.
+/// Returns `None` when nothing is configured, so the caller leaves the current voice unchanged.
+#[must_use]
+pub fn resolve_voice<'a>(
+    speech: &'a Speech,
+    context: SpeechContext,
+    locale: Option<&str>,
+) -> Option<&'a str> {
+    let context_voice = || speech.by_context.get(context.key()).map(String::as_str);
+    let default = || speech.voice.as_deref();
+    match context {
+        SpeechContext::Content => {
+            voice_for_language(&speech.by_language, locale)
+                .or_else(context_voice)
+                .or_else(default)
+        }
+        SpeechContext::Ui => context_voice().or_else(default),
+    }
 }
 
 /// Scalar fields are declared before the `[speech]` table and `exclusions` array so the value
@@ -251,6 +299,60 @@ mod tests {
         assert_eq!(voice_for_language(&map, Some("de-DE")), None);
         assert_eq!(voice_for_language(&map, None), None);
         assert_eq!(voice_for_language(&map, Some("eng")), None);
+    }
+
+    #[test]
+    fn resolve_voice_applies_precedence() {
+        use super::{resolve_voice, Speech, SpeechContext};
+        let mut speech = Speech {
+            voice: Some("Default".to_owned()),
+            ..Speech::default()
+        };
+        speech
+            .by_context
+            .insert("content".to_owned(), "ContentVoice".to_owned());
+        speech
+            .by_context
+            .insert("ui".to_owned(), "UiVoice".to_owned());
+        speech
+            .by_language
+            .insert("es".to_owned(), "Spanish".to_owned());
+
+        // Content + matching language → language voice wins over the content context voice.
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Content, Some("es-ES")),
+            Some("Spanish")
+        );
+        // Content + no language match → content context voice.
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Content, Some("en-US")),
+            Some("ContentVoice")
+        );
+        // UI → ui context voice (language is irrelevant to chrome).
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Ui, Some("es-ES")),
+            Some("UiVoice")
+        );
+
+        // Fall back to the default voice when no context voice is set.
+        speech.by_context.clear();
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Ui, None),
+            Some("Default")
+        );
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Content, Some("en")),
+            Some("Default")
+        );
+
+        // Nothing configured at all → None (caller keeps the current voice).
+        speech.voice = None;
+        speech.by_language.clear();
+        assert_eq!(
+            resolve_voice(&speech, SpeechContext::Content, Some("en")),
+            None
+        );
+        assert_eq!(resolve_voice(&speech, SpeechContext::Ui, None), None);
     }
 
     #[test]

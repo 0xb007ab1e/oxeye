@@ -227,16 +227,18 @@ pub fn format_config(settings: &Settings) -> String {
     } else {
         speech.rotation.join(", ")
     };
-    let by_language = if speech.by_language.is_empty() {
-        "(none)".to_owned()
-    } else {
-        speech
-            .by_language
-            .iter()
-            .map(|(tag, voice)| format!("{tag}→{voice}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    let render_map = |map: &std::collections::BTreeMap<String, String>| {
+        if map.is_empty() {
+            "(none)".to_owned()
+        } else {
+            map.iter()
+                .map(|(k, v)| format!("{k}→{v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     };
+    let by_language = render_map(&speech.by_language);
+    let by_context = render_map(&speech.by_context);
     format!(
         "verbosity: {}\n\
          network: {network}\n\
@@ -247,6 +249,7 @@ pub fn format_config(settings: &Settings) -> String {
          output module: {}\n\
          voice rotation: {rotation}\n\
          language voices: {by_language}\n\
+         context voices: {by_context}\n\
          exclusion rules: {}",
         verbosity_label(settings.verbosity),
         speech.rate,
@@ -398,6 +401,20 @@ mod tests {
             .insert("es".to_owned(), "Pedro".to_owned());
         // BTreeMap keeps tags sorted, so the display order is stable.
         assert!(super::format_config(&s).contains("language voices: en→Alan, es→Pedro"));
+    }
+
+    #[test]
+    fn config_summary_reports_context_voices() {
+        let mut s = Settings::default();
+        assert!(super::format_config(&s).contains("context voices: (none)"));
+        s.speech
+            .by_context
+            .insert("content".to_owned(), "Reader".to_owned());
+        s.speech
+            .by_context
+            .insert("ui".to_owned(), "Chrome".to_owned());
+        let out = super::format_config(&s);
+        assert!(out.contains("context voices: content→Reader, ui→Chrome"));
     }
 
     #[test]

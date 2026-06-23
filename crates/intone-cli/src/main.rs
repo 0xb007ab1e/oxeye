@@ -104,6 +104,32 @@ enum ConfigCommand {
         /// Voice name for that language, or `default` to remove the mapping.
         voice: String,
     },
+    /// Set a voice for content vs the reader's own UI/meta announcements.
+    VoiceContext {
+        /// Which announcements: `content` (what's read) or `ui` (time/structure/navigation/…).
+        context: ContextArg,
+        /// Voice name for that context, or `default` to remove the mapping.
+        voice: String,
+    },
+}
+
+/// CLI mirror of the `content` / `ui` speech contexts (keeps clap out of `intone-core`).
+#[derive(Clone, Copy, ValueEnum)]
+enum ContextArg {
+    /// Application content being read.
+    Content,
+    /// The reader's own meta-announcements.
+    Ui,
+}
+
+impl ContextArg {
+    /// The `by_context` map key.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::Ui => "ui",
+        }
+    }
 }
 
 /// An on/off switch for a boolean setting.
@@ -326,6 +352,24 @@ fn run_config(command: ConfigCommand) -> Result<()> {
                     .by_language
                     .insert(tag.clone(), voice.clone());
                 println!("language {tag} → voice {voice}");
+            }
+            settings.save().context("saving settings")?;
+        }
+        ConfigCommand::VoiceContext { context, voice } => {
+            let mut settings = Settings::load().context("loading settings")?;
+            let key = context.key();
+            if voice == "default" {
+                if settings.speech.by_context.remove(key).is_some() {
+                    println!("removed {key} voice");
+                } else {
+                    println!("no {key} voice was set");
+                }
+            } else {
+                settings
+                    .speech
+                    .by_context
+                    .insert(key.to_owned(), voice.clone());
+                println!("{key} voice → {voice}");
             }
             settings.save().context("saving settings")?;
         }

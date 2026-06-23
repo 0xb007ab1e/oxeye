@@ -39,6 +39,7 @@ use intone_core::announcement;
 use intone_core::braille;
 use intone_core::exclusions::{Context as ExclusionContext, ExclusionEngine};
 use intone_core::navigation::{self, Direction, NavCategory};
+use intone_core::settings::{resolve_voice, SpeechContext};
 use intone_core::{Settings, Speech};
 
 /// X keysyms for the keys we react to.
@@ -311,6 +312,24 @@ async fn setup_keyboard() -> Option<Keyboard> {
     })
 }
 
+/// Switch the speaker to the voice resolved for `context` + `locale` (per `resolve_voice`
+/// precedence: content language → context voice → default), tracking `current` to avoid redundant
+/// SSIP sets. A no-op when nothing is configured (keeps the current voice).
+async fn apply_voice(
+    speaker: &mut Speaker,
+    speech: &Speech,
+    context: SpeechContext,
+    locale: Option<&str>,
+    current: &mut Option<String>,
+) {
+    if let Some(voice) = resolve_voice(speech, context, locale) {
+        if current.as_deref() != Some(voice) {
+            speaker.set_voice(voice).await;
+            *current = Some(voice.to_owned());
+        }
+    }
+}
+
 /// Run the Linux screen-reader back-end: connect AT-SPI, speech, and hotkeys, then loop
 /// until interrupted. The `intone-linux` binary sets up the async runtime and calls this.
 pub async fn run() -> Result<()> {
@@ -390,8 +409,10 @@ pub async fn run() -> Result<()> {
     // Voices the Ctrl+Alt+V hotkey cycles through, and the next one to apply.
     let voice_rotation = settings.speech.rotation.clone();
     let mut voice_index = 0usize;
-    // The voice currently applied by language auto-switching, to avoid redundant SSIP sets.
-    let mut current_lang_voice: Option<String> = None;
+    // The voice currently applied (by context/language switching), to avoid redundant SSIP sets.
+    let mut current_voice: Option<String> = None;
+    // Language of the most recently focused content, reused for caret/text content announcements.
+    let mut content_locale: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -444,18 +465,17 @@ pub async fn run() -> Result<()> {
                         let Some(ann) = composed else {
                             continue; // suppressed by an exclusion rule
                         };
-                        // Auto-switch the voice to match the content's language (before speaking,
-                        // so the announcement itself is in the new voice). Skips when unconfigured
-                        // or already on the right voice.
-                        if let Some(voice) = intone_core::settings::voice_for_language(
-                            &settings.speech.by_language,
-                            focused.locale.as_deref(),
-                        ) {
-                            if current_lang_voice.as_deref() != Some(voice) {
-                                speaker.set_voice(voice).await;
-                                current_lang_voice = Some(voice.to_owned());
-                            }
-                        }
+                        // Focus reads application content: switch to the content voice (language
+                        // match wins, then content context voice, then default) before speaking.
+                        content_locale = focused.locale.clone();
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Content,
+                            content_locale.as_deref(),
+                            &mut current_voice,
+                        )
+                        .await;
                         last_text = Some(ann.text.clone());
                         speaker.announce(&ann.text, ann.interrupt).await;
                     }
@@ -467,6 +487,15 @@ pub async fn run() -> Result<()> {
                         {
                             continue; // a caret move on some other (stale) object
                         }
+                        // Caret movement reads content — ensure the content voice.
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Content,
+                            content_locale.as_deref(),
+                            &mut current_voice,
+                        )
+                        .await;
                         let new = moved.position;
                         let pending_insert = tracker.pending_insert.take();
                         // Suppress the caret move a deletion triggers (the removed text was
@@ -503,6 +532,15 @@ pub async fn run() -> Result<()> {
                         {
                             continue;
                         }
+                        // Text edits read content — ensure the content voice.
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Content,
+                            content_locale.as_deref(),
+                            &mut current_voice,
+                        )
+                        .await;
                         match changed.operation {
                             // Mark the insertion; the paired caret move reads and echoes the new
                             // character(s) from the field itself (so even the first one speaks).
@@ -528,6 +566,15 @@ pub async fn run() -> Result<()> {
                         {
                             continue;
                         }
+                        // Selection reads content — ensure the content voice.
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Content,
+                            content_locale.as_deref(),
+                            &mut current_voice,
+                        )
+                        .await;
                         let Some(read) = read_selection(&conn, &sel).await else {
                             continue;
                         };
@@ -564,6 +611,14 @@ pub async fn run() -> Result<()> {
                         speaker.announce(&text, true).await;
                     }
                     KEYSYM_O if has_ctrl_alt(args.state) => {
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Ui,
+                            None,
+                            &mut current_voice,
+                        )
+                        .await;
                         speaker
                             .announce(&format!("time, {}", current_time()), true)
                             .await;
@@ -581,6 +636,7 @@ pub async fn run() -> Result<()> {
                             let name = voice_rotation[voice_index].clone();
                             voice_index = (voice_index + 1) % voice_rotation.len();
                             speaker.set_voice(&name).await;
+                            current_voice = Some(name.clone());
                             last_text = Some(name.clone());
                             speaker.announce(&name, true).await;
                         }
@@ -592,6 +648,14 @@ pub async fn run() -> Result<()> {
                         };
                         let text = summary
                             .unwrap_or_else(|| "no structure to summarize".to_owned());
+                        apply_voice(
+                            &mut speaker,
+                            &settings.speech,
+                            SpeechContext::Ui,
+                            None,
+                            &mut current_voice,
+                        )
+                        .await;
                         speaker.announce(&text, true).await;
                     }
                     KEYSYM_H | KEYSYM_B | KEYSYM_L | KEYSYM_F
@@ -612,6 +676,14 @@ pub async fn run() -> Result<()> {
                         )
                         .await;
                         if let Some(text) = moved {
+                            apply_voice(
+                                &mut speaker,
+                                &settings.speech,
+                                SpeechContext::Ui,
+                                None,
+                                &mut current_voice,
+                            )
+                            .await;
                             last_text = Some(text.clone());
                             speaker.announce(&text, true).await;
                         }

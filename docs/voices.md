@@ -90,6 +90,26 @@ per-object language, so auto-switching only takes effect where an application ge
 differing locale (some document/web content). Otherwise it's a no-op — it never picks a wrong
 voice, it just doesn't switch.
 
+## Content vs reader voices
+
+Give the application's content and the reader's own announcements different voices, so the
+reader's meta-chatter is audibly distinct from what it's reading:
+
+```console
+$ intone config voice-context content "English (Great Britain)"
+$ intone config voice-context ui "English (Scotland)"
+$ intone config voice-context ui default      # remove the ui voice
+$ intone config show                           # shows "context voices: …"
+```
+
+- **content** — application content: focus readout, caret/typed text, selections.
+- **ui** — the reader's own meta-announcements: the time (Ctrl+Alt+O), the structure summary
+  (Ctrl+Alt+S), by-type navigation (Ctrl+Alt+H/B/L/F), and voice-cycle confirmations.
+
+Precedence — **content:** a per-language voice (above) wins, then the content context voice, then
+the default voice (`intone config voice <name>`); **ui:** the ui context voice, then the default.
+Set a default voice as the baseline so any unmatched case still has a voice to fall back to.
+
 ## Output modules (OSS engines)
 
 ### espeak-ng — the default

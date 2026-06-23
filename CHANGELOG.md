@@ -17,6 +17,11 @@ between minor versions.
 
 ### Added
 
+- **Context voices (content vs reader)** — `intone config voice-context content|ui <voice>`
+  (`<context> default` removes one) reads application content and the reader's own
+  meta-announcements (time, structure summary, by-type navigation, voice-cycle) in different
+  voices. Precedence: content = per-language → content voice → default; ui = ui voice → default.
+  `config show` lists them. (Voices Phase 4; see [`docs/voices.md`](docs/voices.md).)
 - **Automatic per-language voices** — map languages to voices with
   `intone config voice-lang <tag> <voice>` (`<tag> default` removes one); on Linux the reader
   reads each focused object's locale (AT-SPI `locale()`) and switches voice to match before
