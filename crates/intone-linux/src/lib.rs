@@ -390,6 +390,8 @@ pub async fn run() -> Result<()> {
     // Voices the Ctrl+Alt+V hotkey cycles through, and the next one to apply.
     let voice_rotation = settings.speech.rotation.clone();
     let mut voice_index = 0usize;
+    // The voice currently applied by language auto-switching, to avoid redundant SSIP sets.
+    let mut current_lang_voice: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -442,6 +444,18 @@ pub async fn run() -> Result<()> {
                         let Some(ann) = composed else {
                             continue; // suppressed by an exclusion rule
                         };
+                        // Auto-switch the voice to match the content's language (before speaking,
+                        // so the announcement itself is in the new voice). Skips when unconfigured
+                        // or already on the right voice.
+                        if let Some(voice) = intone_core::settings::voice_for_language(
+                            &settings.speech.by_language,
+                            focused.locale.as_deref(),
+                        ) {
+                            if current_lang_voice.as_deref() != Some(voice) {
+                                speaker.set_voice(voice).await;
+                                current_lang_voice = Some(voice.to_owned());
+                            }
+                        }
                         last_text = Some(ann.text.clone());
                         speaker.announce(&ann.text, ann.interrupt).await;
                     }
@@ -744,6 +758,35 @@ struct Focused {
     states: announcement::States,
     /// Whether the object exposes the AT-SPI Text interface (so the caret can be tracked).
     has_text: bool,
+    /// The object's language as a normalised tag (e.g. `en-US`), read from AT-SPI `locale()`;
+    /// `None` if unset/unavailable. Drives per-language voice auto-switching.
+    locale: Option<String>,
+}
+
+/// Normalise a Unix locale (`en_US.UTF-8`, `es_ES@euro`, `C`) to a BCP-47-ish tag (`en-US`,
+/// `es-ES`). Returns `None` for empty / `C` / `POSIX` locales, which carry no language.
+fn normalize_locale(raw: &str) -> Option<String> {
+    let base = raw.split(['.', '@']).next().unwrap_or("").trim();
+    if base.is_empty() || base.eq_ignore_ascii_case("C") || base.eq_ignore_ascii_case("POSIX") {
+        return None;
+    }
+    Some(base.replace('_', "-"))
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::normalize_locale;
+
+    #[test]
+    fn normalizes_unix_locales_to_tags() {
+        assert_eq!(normalize_locale("en_US.UTF-8").as_deref(), Some("en-US"));
+        assert_eq!(normalize_locale("es_ES@euro").as_deref(), Some("es-ES"));
+        assert_eq!(normalize_locale("en").as_deref(), Some("en"));
+        // No-language locales become None.
+        assert_eq!(normalize_locale("C"), None);
+        assert_eq!(normalize_locale("POSIX"), None);
+        assert_eq!(normalize_locale(""), None);
+    }
 }
 
 /// Build an accessible proxy for the event's object and read its describable attributes.
@@ -803,6 +846,13 @@ async fn read_focus(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> R
         None
     };
     let app = read_app_name(conn, &proxy).await;
+    // Per-object language for voice auto-switching; best-effort (many toolkits report the system
+    // locale here, so a switch only happens when an app exposes a genuinely different locale).
+    let locale = proxy
+        .locale()
+        .await
+        .ok()
+        .and_then(|raw| normalize_locale(&raw));
     if name.is_empty() {
         // Unnamed containers (panels/frames/fillers) are normal; not worth a warning.
         tracing::debug!(%sender, %path, %app, %role, "focused object has no accessible name");
@@ -815,6 +865,7 @@ async fn read_focus(conn: &AccessibilityConnection, ev: &StateChangedEvent) -> R
         value,
         states,
         has_text,
+        locale,
     })
 }
 

@@ -227,6 +227,16 @@ pub fn format_config(settings: &Settings) -> String {
     } else {
         speech.rotation.join(", ")
     };
+    let by_language = if speech.by_language.is_empty() {
+        "(none)".to_owned()
+    } else {
+        speech
+            .by_language
+            .iter()
+            .map(|(tag, voice)| format!("{tag}→{voice}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
         "verbosity: {}\n\
          network: {network}\n\
@@ -236,6 +246,7 @@ pub fn format_config(settings: &Settings) -> String {
          language: {}\n\
          output module: {}\n\
          voice rotation: {rotation}\n\
+         language voices: {by_language}\n\
          exclusion rules: {}",
         verbosity_label(settings.verbosity),
         speech.rate,
@@ -373,6 +384,20 @@ mod tests {
         );
         s.speech.rotation = vec!["Alan".to_owned(), "Klaus".to_owned()];
         assert!(super::format_config(&s).contains("voice rotation: Alan, Klaus"));
+    }
+
+    #[test]
+    fn config_summary_reports_language_voices() {
+        let mut s = Settings::default();
+        assert!(super::format_config(&s).contains("language voices: (none)"));
+        s.speech
+            .by_language
+            .insert("en".to_owned(), "Alan".to_owned());
+        s.speech
+            .by_language
+            .insert("es".to_owned(), "Pedro".to_owned());
+        // BTreeMap keeps tags sorted, so the display order is stable.
+        assert!(super::format_config(&s).contains("language voices: en→Alan, es→Pedro"));
     }
 
     #[test]

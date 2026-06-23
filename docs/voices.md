@@ -68,6 +68,28 @@ Each press advances through the list and wraps around. With no rotation configur
 says so. (The switch applies to the running session; the persisted default voice is still
 `intone config voice <name>`.)
 
+## Per-language voices (automatic)
+
+Map languages to voices and intone switches automatically when the focused content's language
+changes — e.g. an English voice for English text, a Spanish voice for Spanish:
+
+```console
+$ intone config voice-lang en "English (Great Britain)"
+$ intone config voice-lang es "Spanish (Spain)"
+$ intone config voice-lang en default        # remove the mapping for en
+$ intone config show                          # shows "language voices: en→…, es→…"
+```
+
+Tags match case-insensitively and by prefix, **most-specific first** — so `en` covers `en-US`
+and `en-GB`, while a separate `en-GB` entry takes precedence for British English.
+
+How the language is detected: intone reads the focused object's locale from AT-SPI
+(`AccessibleProxy::locale()`) on each focus change and applies the matching voice before speaking.
+**Caveat:** many toolkits report the *system* locale for every object rather than a true
+per-object language, so auto-switching only takes effect where an application genuinely exposes a
+differing locale (some document/web content). Otherwise it's a no-op — it never picks a wrong
+voice, it just doesn't switch.
+
 ## Output modules (OSS engines)
 
 ### espeak-ng — the default

@@ -97,6 +97,13 @@ enum ConfigCommand {
         /// Voice names in cycle order (space-separated); none clears the rotation.
         names: Vec<String>,
     },
+    /// Map a language to a voice, for automatic switching by content language (Linux).
+    VoiceLang {
+        /// Language tag (e.g. `en`, `es`, `en-GB`).
+        tag: String,
+        /// Voice name for that language, or `default` to remove the mapping.
+        voice: String,
+    },
 }
 
 /// An on/off switch for a boolean setting.
@@ -304,6 +311,23 @@ fn run_config(command: ConfigCommand) -> Result<()> {
             } else {
                 println!("voice rotation set ({count} voices)");
             }
+        }
+        ConfigCommand::VoiceLang { tag, voice } => {
+            let mut settings = Settings::load().context("loading settings")?;
+            if voice == "default" {
+                if settings.speech.by_language.remove(&tag).is_some() {
+                    println!("removed language voice for {tag}");
+                } else {
+                    println!("no language voice was set for {tag}");
+                }
+            } else {
+                settings
+                    .speech
+                    .by_language
+                    .insert(tag.clone(), voice.clone());
+                println!("language {tag} → voice {voice}");
+            }
+            settings.save().context("saving settings")?;
         }
     }
     Ok(())

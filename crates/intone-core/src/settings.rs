@@ -5,6 +5,7 @@
 //! (which may include exclusion patterns revealing app usage). No secrets are stored here;
 //! networking is **off by default** (no telemetry / no cloud).
 
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -60,6 +61,11 @@ pub struct Speech {
     /// disables cycling. Each name is what `intone config voice <name>` would accept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rotation: Vec<String>,
+    /// Map of language tag (e.g. `en`, `es`, `en-GB`) → voice name, used to auto-switch the voice
+    /// to match the focused content's language. Empty disables auto-switching. Declared last so
+    /// it serialises as the `[speech.by_language]` sub-table after the scalar fields.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_language: BTreeMap<String, String>,
 }
 
 impl Default for Speech {
@@ -72,8 +78,32 @@ impl Default for Speech {
             language: None,
             output_module: None,
             rotation: Vec::new(),
+            by_language: BTreeMap::new(),
         }
     }
+}
+
+/// Choose the configured voice for a content `locale`, if any.
+///
+/// `by_language` maps a language tag (`en`, `es`, `en-GB`, …) to a voice name; `locale` is the
+/// focused content's language tag (lower/upper-case and `en-US`/`en_US` forms are both fine — the
+/// caller normalises separators). Matching is case-insensitive and boundary-aware (so `en` matches
+/// `en` and `en-GB` but not `eng`), preferring the **most specific** (longest) configured tag.
+/// Returns `None` when nothing matches, so the caller keeps the current voice.
+#[must_use]
+pub fn voice_for_language<'a>(
+    by_language: &'a BTreeMap<String, String>,
+    locale: Option<&str>,
+) -> Option<&'a str> {
+    let locale = locale?.to_ascii_lowercase();
+    by_language
+        .iter()
+        .filter(|(tag, _)| {
+            let tag = tag.to_ascii_lowercase();
+            locale == tag || locale.starts_with(&format!("{tag}-"))
+        })
+        .max_by_key(|(tag, _)| tag.len())
+        .map(|(_, voice)| voice.as_str())
 }
 
 /// Scalar fields are declared before the `[speech]` table and `exclusions` array so the value
@@ -200,5 +230,41 @@ mod tests {
         assert_eq!(back.allow_network, s.allow_network);
         assert_eq!(back.braille, s.braille);
         assert_eq!(back.verbosity, s.verbosity);
+    }
+
+    #[test]
+    fn voice_for_language_prefers_most_specific_match() {
+        use super::voice_for_language;
+        use std::collections::BTreeMap;
+        let map = BTreeMap::from([
+            ("en".to_owned(), "Alan".to_owned()),
+            ("en-GB".to_owned(), "Daniel".to_owned()),
+            ("es".to_owned(), "Pedro".to_owned()),
+        ]);
+        // Most specific (longest) configured tag wins.
+        assert_eq!(voice_for_language(&map, Some("en-GB")), Some("Daniel"));
+        // Falls back to the broader tag when only it matches.
+        assert_eq!(voice_for_language(&map, Some("en-US")), Some("Alan"));
+        // Case-insensitive.
+        assert_eq!(voice_for_language(&map, Some("ES-es")), Some("Pedro"));
+        // No match / no locale / mere shared prefix without a boundary.
+        assert_eq!(voice_for_language(&map, Some("de-DE")), None);
+        assert_eq!(voice_for_language(&map, None), None);
+        assert_eq!(voice_for_language(&map, Some("eng")), None);
+    }
+
+    #[test]
+    fn by_language_round_trips_as_a_subtable() {
+        let mut s = Settings::default();
+        s.speech.rotation = vec!["Alan".to_owned()];
+        s.speech
+            .by_language
+            .insert("en".to_owned(), "Alan".to_owned());
+        let text = toml::to_string_pretty(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(
+            back.speech.by_language.get("en").map(String::as_str),
+            Some("Alan")
+        );
     }
 }

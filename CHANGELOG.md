@@ -17,6 +17,12 @@ between minor versions.
 
 ### Added
 
+- **Automatic per-language voices** — map languages to voices with
+  `intone config voice-lang <tag> <voice>` (`<tag> default` removes one); on Linux the reader
+  reads each focused object's locale (AT-SPI `locale()`) and switches voice to match before
+  speaking. Tags match case-insensitively and by prefix, most-specific first (`en` covers
+  `en-US`; an `en-GB` entry wins for British English). No-op where an app only reports the system
+  locale — it never picks a wrong voice. (Voices Phase 3; see [`docs/voices.md`](docs/voices.md).)
 - **Live voice cycling** — configure a rotation with `intone config rotation <names…>` (empty
   clears it), then press **Ctrl+Alt+V** while the reader is running to switch to the next voice;
   the new voice announces its own name. Adds `[speech] rotation` to settings (core) and reports it
