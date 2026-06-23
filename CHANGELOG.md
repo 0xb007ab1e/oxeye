@@ -14,6 +14,13 @@ between minor versions.
   so it swallowed every Control/Alt press before the focused app saw it — locking out all
   Ctrl/Alt shortcuts (Ctrl+C, Alt+Tab, VT switching). Only the dedicated `Ctrl+Alt+<letter>`
   combos are grabbed now; bare Control still drives "silence" via pass-through.
+- **`oxeye-linux`** — speech now actually plays. SSIP is strict request/response, but every
+  `ssip-client-async` write (`set_client_name`, `set_rate/pitch/volume`, `cancel`, `speak`)
+  must have its reply read or the response stream desyncs; oxeye never read them, so the first
+  `speak` consumed a stale reply (`not a message id`) and no audio was produced. Each write is
+  now paired with its read, and `say()` uses the correct `speak → check_receiving_data →
+  send_lines → receive_message_id` exchange (the old `send_line` never sent the terminating
+  `.`). Surfaced only on real audio — `OXEYE_SPEECH=text` bypasses SSIP.
 
 ## [0.1.0] — 2026-06-22
 

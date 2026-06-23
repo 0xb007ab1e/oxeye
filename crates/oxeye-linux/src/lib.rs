@@ -134,7 +134,11 @@ impl Speaker {
         }
         if let Some(client) = self.client.as_mut() {
             if interrupt {
-                let _ = client.cancel(MessageScope::All).await;
+                // CANCEL returns a reply (`210`); consume it so the SPEAK exchange below
+                // reads its own responses rather than the cancel's.
+                if client.cancel(MessageScope::All).await.is_ok() {
+                    let _ = client.receive().await;
+                }
             }
             if let Err(err) = say(client, text).await {
                 tracing::debug!(%err, "speech failed");
@@ -148,7 +152,9 @@ impl Speaker {
             println!("[silence]");
         }
         if let Some(client) = self.client.as_mut() {
-            let _ = client.cancel(MessageScope::All).await;
+            if client.cancel(MessageScope::All).await.is_ok() {
+                let _ = client.receive().await;
+            }
         }
     }
 }
@@ -592,30 +598,62 @@ async fn connect_speech(settings: &Settings) -> Result<SsipClient> {
     tts.set_client_name(ClientName::new("oxeye", "oxeye"))
         .await
         .context("registering SSIP client name")?;
+    tts.check_client_name_set()
+        .await
+        .context("confirming SSIP client name")?;
     apply_speech_settings(&mut tts, &settings.speech).await;
     Ok(tts)
 }
 
 /// Apply rate/pitch/volume/voice/language/output-module from settings (best-effort).
 async fn apply_speech_settings(tts: &mut SsipClient, speech: &Speech) {
+    // Every SET writes a request whose reply (`208`-class OK) must be consumed with `receive`
+    // so the response stream stays in step for the SPEAK exchange that follows. Best-effort:
+    // a failed write is skipped (and leaves no reply to read).
     if let Some(module) = &speech.output_module {
-        let _ = tts.set_output_module(ClientScope::Current, module).await;
+        if tts
+            .set_output_module(ClientScope::Current, module)
+            .await
+            .is_ok()
+        {
+            let _ = tts.receive().await;
+        }
     }
     if let Some(voice) = &speech.voice {
-        let _ = tts.set_synthesis_voice(ClientScope::Current, voice).await;
+        if tts
+            .set_synthesis_voice(ClientScope::Current, voice)
+            .await
+            .is_ok()
+        {
+            let _ = tts.receive().await;
+        }
     }
     if let Some(lang) = &speech.language {
-        let _ = tts.set_language(ClientScope::Current, lang).await;
+        if tts.set_language(ClientScope::Current, lang).await.is_ok() {
+            let _ = tts.receive().await;
+        }
     }
-    let _ = tts
+    if tts
         .set_rate(ClientScope::Current, to_ssip_scale(speech.rate))
-        .await;
-    let _ = tts
+        .await
+        .is_ok()
+    {
+        let _ = tts.receive().await;
+    }
+    if tts
         .set_pitch(ClientScope::Current, to_ssip_scale(speech.pitch))
-        .await;
-    let _ = tts
+        .await
+        .is_ok()
+    {
+        let _ = tts.receive().await;
+    }
+    if tts
         .set_volume(ClientScope::Current, to_ssip_scale(speech.volume))
-        .await;
+        .await
+        .is_ok()
+    {
+        let _ = tts.receive().await;
+    }
 }
 
 /// Map a 0..=100 user setting onto SSIP's -100..=100 scale (50 -> 0, 100 -> +100).
@@ -1131,7 +1169,13 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    tts.speak().await?.send_line(text).await?;
+    // SSIP is strict request/response: each step must read its reply or the stream desyncs.
+    // SPEAK → `230 RECEIVING DATA` → the text lines (terminated by a lone `.`, which
+    // `send_lines` appends) → `225 MESSAGE QUEUED` + id. `send_line` alone neither consumes
+    // the 230 nor sends the terminating dot, so the message would never queue.
+    tts.speak().await?;
+    tts.check_receiving_data().await?;
+    tts.send_lines(&[text.to_owned()]).await?;
     tts.receive_message_id().await?;
     Ok(())
 }
