@@ -145,11 +145,9 @@ pub fn resolve_voice<'a>(
     let context_voice = || speech.by_context.get(context.key()).map(String::as_str);
     let default = || speech.voice.as_deref();
     match context {
-        SpeechContext::Content => {
-            voice_for_language(&speech.by_language, locale)
-                .or_else(context_voice)
-                .or_else(default)
-        }
+        SpeechContext::Content => voice_for_language(&speech.by_language, locale)
+            .or_else(context_voice)
+            .or_else(default),
         SpeechContext::Ui => context_voice().or_else(default),
     }
 }
