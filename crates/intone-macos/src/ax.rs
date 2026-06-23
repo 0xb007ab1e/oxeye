@@ -51,7 +51,7 @@ pub(crate) fn run() -> Result<()> {
     let exclusions = ExclusionEngine::compile(&settings.exclusions).unwrap_or_default();
     // SAFETY: create the system-wide accessibility element (owned for the process lifetime).
     let system = unsafe { AXUIElementCreateSystemWide() };
-    let speaker = Speaker::new();
+    let speaker = Speaker::new(&settings.speech);
 
     eprintln!("intone-macos: speaking focus changes. Ctrl-C to quit.");
     let mut last = String::new();

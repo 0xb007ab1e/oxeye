@@ -141,7 +141,9 @@ pub(crate) fn run() -> Result<()> {
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
             .context("creating the UI Automation client")?;
 
-    let speech = mode.wants_audio().then(spawn_speech_thread);
+    let speech = mode
+        .wants_audio()
+        .then(|| spawn_speech_thread(settings.speech.rate, settings.speech.volume));
     let handler: IUIAutomationFocusChangedEventHandler = FocusHandler {
         exclusions: Arc::clone(&exclusions),
         verbosity: settings.verbosity,
@@ -345,15 +347,21 @@ fn control_type_category(control_type: UIA_CONTROLTYPE_ID) -> Option<NavCategory
     }
 }
 
-/// Spawn the speech thread (it owns the `!Send` `ISpVoice`) and return a sender to it.
-fn spawn_speech_thread() -> SyncSender<Utterance> {
+/// Spawn the speech thread (it owns the `!Send` `ISpVoice`) and return a sender to it. `rate`
+/// and `volume` are the user's 0–100 settings, applied once on the voice.
+fn spawn_speech_thread(rate: u8, volume: u8) -> SyncSender<Utterance> {
     let (tx, rx) = sync_channel::<Utterance>(32);
-    std::thread::spawn(move || speech_loop(&rx));
+    std::thread::spawn(move || speech_loop(&rx, rate, volume));
     tx
 }
 
+/// Map a 0–100 rate (50 = normal) onto SAPI's `SetRate` scale (-10..=10).
+fn rate_to_sapi(value: u8) -> i32 {
+    ((i32::from(value) - 50) / 5).clamp(-10, 10)
+}
+
 /// Own a SAPI voice and speak each received utterance. Exits silently if SAPI is unavailable.
-fn speech_loop(rx: &Receiver<Utterance>) {
+fn speech_loop(rx: &Receiver<Utterance>, rate: u8, volume: u8) {
     // SAFETY: COM init for this thread (MTA); the voice is created and used only here.
     if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
@@ -369,6 +377,13 @@ fn speech_loop(rx: &Receiver<Utterance>) {
             return;
         }
     };
+    // Apply the configured prosody (best-effort). Selecting a voice by name additionally needs
+    // SAPI token enumeration (`SPCAT_VOICES`) + real-Windows verification — a follow-up.
+    // SAFETY: simple prosody setters on the SAPI voice; errors are non-fatal.
+    unsafe {
+        let _ = voice.SetRate(rate_to_sapi(rate));
+        let _ = voice.SetVolume(u16::from(volume).min(100));
+    }
     while let Ok(utterance) = rx.recv() {
         let mut wide: Vec<u16> = utterance.text.encode_utf16().collect();
         wide.push(0); // null-terminate

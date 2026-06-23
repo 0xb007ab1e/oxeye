@@ -17,6 +17,11 @@ between minor versions.
 
 ### Added
 
+- **Cross-platform speech settings (Phase 5)** — the **Windows** (SAPI) and **macOS**
+  (AVFoundation) back-ends now apply the configured **rate** and **volume** (previously
+  Linux-only); macOS also applies **pitch** and selects the **voice** by identifier or `language`.
+  Windows voice-by-name and macOS voice-by-friendly-name selection remain follow-ups (need
+  real-hardware verification). See [`docs/voices.md`](docs/voices.md) (Platform support).
 - **Context voices (content vs reader)** — `intone config voice-context content|ui <voice>`
   (`<context> default` removes one) reads application content and the reader's own
   meta-announcements (time, structure summary, by-type navigation, voice-cycle) in different

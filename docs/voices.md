@@ -149,6 +149,19 @@ installed.
 Any speech-dispatcher module you install (e.g. **mbrola** voices for espeak, festival) appears in
 `intone voices list` and can be selected the same way. intone is deliberately engine-agnostic.
 
+## Platform support
+
+The above is fullest on **Linux** (speech-dispatcher), where rate/pitch/volume, voice/module/
+language selection, cycling, and language/context auto-switching all apply live.
+
+- **macOS** (AVFoundation): applies rate, **pitch**, volume, and selects the voice by **identifier**
+  (e.g. `com.apple.voice.compact.en-US.Samantha`) or by `language`.
+- **Windows** (SAPI): applies rate and volume.
+
+Still to come on those platforms (need real-hardware verification): selecting a voice by *friendly
+name* (macOS) and any voice-by-name selection on Windows (SAPI token enumeration), plus the live
+per-language/context switching that Linux has.
+
 ## References
 
 - speech-dispatcher configuration & Piper generic module — [ArchWiki: Speech dispatcher](https://wiki.archlinux.org/title/Speech_dispatcher)
